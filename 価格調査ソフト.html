@@ -1,0 +1,1883 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0e7490" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="価格調査" />
+<link rel="apple-touch-icon" href="icon-192.png" />
+<title>価格調査ソフト</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230e7490'/%3E%3Ctext x='32' y='40' font-size='30' text-anchor='middle' fill='%23fff' font-family='sans-serif'%3E%C2%A5%3C/text%3E%3Ccircle cx='44' cy='44' r='11' fill='none' stroke='%23fff' stroke-width='4'/%3E%3Cline x1='51' y1='51' x2='60' y2='60' stroke='%23fff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<style>
+  body { font-family: "Segoe UI", "Yu Gothic UI", "Yu Gothic", system-ui, sans-serif; }
+  input[type=number]::-webkit-outer-spin-button, input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .tbl th, .tbl td { border: 1px solid #cbd5e1; padding: 3px 6px; }
+  .tbl th { background: #f1f5f9; font-weight: 600; }
+  /* ===== 印刷（見積依頼書のみ出す。position:fixedは複製バグがあるためabsolute） ===== */
+  .paper { width: 190mm; min-height: 200mm; background: #fff; margin: 0 auto; padding: 12mm 10mm; color: #000; }
+  .paper table.req { width: 100%; border-collapse: collapse; }
+  .paper table.req th, .paper table.req td { border: 0.5px solid #333; padding: 3px 6px; font-size: 11px; }
+  .paper table.req th { background: #fff; text-align: center; font-weight: 600; }
+  .paper .num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* ===== スマホ・タブレット（写真管理アプリ同様：入力16pxでiOSの自動ズーム防止・タップ目標36px） ===== */
+  body { -webkit-text-size-adjust: 100%; }
+  @media (max-width: 640px) {
+    input, select, textarea { font-size: 16px !important; }
+    button { min-height: 36px; }
+    .tbl th, .tbl td { padding: 4px 5px; }
+    .app-sub { display: none; }
+    h1 { font-size: 1.05rem; }
+    .paper { width: 100%; padding: 8mm 5mm; min-height: auto; }
+  }
+  @media print {
+    body { background: #fff !important; }
+    body.printing > #root > div > *:not(.print-backdrop) { display: none !important; }
+    body.printing .print-backdrop { position: absolute !important; inset: auto !important; left: 0 !important; top: 0 !important; width: 100% !important; height: auto !important; background: none !important; padding: 0 !important; overflow: visible !important; }
+    body.printing .print-host { max-width: none !important; overflow: visible; }
+    body.printing .no-print { display: none !important; }
+    body.printing .paper { width: auto; margin: 0; padding: 8mm 6mm; box-shadow: none !important; }
+    html, body { overflow: visible; }
+    @page { size: A4 portrait; margin: 8mm; }
+  }
+</style>
+<script>
+  // ===== 本アプリ専用ストレージ（IndexedDB: kakaku_store/kv。見積ソフトの denki_store には一切書き込まない） =====
+  window.storage = (function () {
+    var DB = "kakaku_store", ST = "kv", dbp = null;
+    function open() {
+      if (dbp) return dbp;
+      dbp = new Promise(function (res, rej) {
+        var r = indexedDB.open(DB, 1);
+        r.onupgradeneeded = function () { r.result.createObjectStore(ST); };
+        r.onsuccess = function () { res(r.result); };
+        r.onerror = function () { rej(r.error); };
+      });
+      return dbp;
+    }
+    function idbGet(k) { return open().then(function (db) { return new Promise(function (res, rej) { var t = db.transaction(ST, "readonly").objectStore(ST).get(k); t.onsuccess = function () { res(t.result); }; t.onerror = function () { rej(t.error); }; }); }); }
+    function idbSet(k, v) { return open().then(function (db) { return new Promise(function (res, rej) { var tx = db.transaction(ST, "readwrite"); tx.objectStore(ST).put(v, k); tx.oncomplete = function () { res(); }; tx.onerror = function () { rej(tx.error); }; }); }); }
+    return {
+      get: function (k) { return idbGet(k).then(function (v) { return v == null ? null : { value: v }; }).catch(function () { var lv = localStorage.getItem(k); return lv == null ? null : { value: lv }; }); },
+      set: function (k, v) { return idbSet(k, v).then(function () { return { value: v }; }).catch(function () { try { localStorage.setItem(k, v); } catch (e) {} return { value: v }; }); },
+    };
+  })();
+
+  // ===== 見積ソフトの歩掛りマスタを読み取り専用で直読（denki_store が無い場合はDBを作らずスキップ） =====
+  window.readSekisanMaster = async function () {
+    try {
+      if (indexedDB.databases) {
+        var list = await indexedDB.databases();
+        var found = false;
+        for (var i = 0; i < list.length; i++) { if (list[i].name === "denki_store") found = true; }
+        if (!found) {
+          // IDBに無くても旧localStorageミラーがあれば読む
+          var lv0 = null; try { lv0 = localStorage.getItem("denki_sekisan_v1"); } catch (e) {}
+          if (lv0) { try { var d0 = JSON.parse(lv0); return { ok: true, master: (d0 && d0.master) || [], ts: d0 && d0.ts }; } catch (e) {} }
+          return { ok: false, reason: "見積ソフトのデータが見つかりません（同じブラウザ・同じプロファイルで見積ソフトを一度開いてください）" };
+        }
+      }
+      var db = await new Promise(function (res, rej) {
+        var r = indexedDB.open("denki_store"); // バージョン指定なし＝既存バージョンで開くだけ（作成・昇格しない）
+        r.onupgradeneeded = function () { try { r.transaction.abort(); } catch (e) {} rej(new Error("newdb")); };
+        r.onsuccess = function () { res(r.result); };
+        r.onerror = function () { rej(r.error); };
+      });
+      if (!db.objectStoreNames.contains("kv")) { db.close(); return { ok: false, reason: "見積ソフトのデータ形式が確認できません" }; }
+      var raw = await new Promise(function (res, rej) {
+        var t = db.transaction("kv", "readonly").objectStore("kv").get("denki_sekisan_v1");
+        t.onsuccess = function () { res(t.result); }; t.onerror = function () { rej(t.error); };
+      });
+      db.close();
+      var s = (raw && raw.value != null) ? raw.value : raw;
+      if (s == null) { try { s = localStorage.getItem("denki_sekisan_v1"); } catch (e) {} }
+      if (s == null) return { ok: false, reason: "見積ソフトの保存データが空です" };
+      var d = (typeof s === "string") ? JSON.parse(s || "null") : s;
+      return { ok: true, master: (d && d.master) || [], ts: d && d.ts };
+    } catch (e) { return { ok: false, reason: String((e && e.message) || e) }; }
+  };
+</script>
+</head>
+<body class="bg-slate-100">
+<div id="root"><div style="max-width:680px;margin:60px auto;padding:24px;font-family:system-ui,sans-serif;color:#64748b;text-align:center">読み込み中…<div style="font-size:12px;margin-top:8px;color:#94a3b8">初回はライブラリ取得に数秒かかります（インターネット接続が必要です）</div></div></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef, useCallback } = React;
+
+// ================= 定数・ユーティリティ =================
+const KEY_MAIN = "kakaku_v1";        // 案件・設定・作業中データ
+const KEY_ZAIRYO = "kakaku_zairyo_v1"; // 材料マスタ.xlsx取込データ（大きいので別キー）
+const KEY_DOCS = "kakaku_docs_v1";     // 品目ごとの資料（カタログ/仕様書/姿図）リンク集
+const KEY_MARKET = "kakaku_market_v1"; // ネット価格DB（型番→調べた市場価格の履歴と採用価格）
+const KEY_SEKISAN_SNAP = "kakaku_sekisan_snap_v1"; // 見積マスタのスナップショット（直読できないスマホ等で使う。バックアップから復元時に保存）
+const PUBLIC_URL = "https://shima9845181.github.io/kakaku-chousa-app/"; // スマホ用の公開URL（GitHub Pages）
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
+const yen = (v) => (v == null || v === "" || isNaN(v)) ? "" : Math.round(v).toLocaleString();
+const today = () => { const d = new Date(); return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); };
+const ymdStr = () => today().replace(/-/g, "");
+const jpDate = (s) => { if (!s) return ""; const d = new Date(s); if (isNaN(d)) return String(s); return d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日"; };
+// あいまい検索用の正規化：全角→半角(NFKC)・小文字化・空白/ハイフン類を除去
+const norm = (s) => (s == null ? "" : String(s)).normalize("NFKC").toLowerCase().replace(/[\s　]/g, "").replace(/[\-‐‑‒–—―ー－_\/]/g, "");
+const tokens = (q) => String(q || "").split(/[\s　]+/).map(norm).filter(Boolean);
+const hitAll = (hay, toks) => toks.every((t) => hay.includes(t));
+
+const DEFAULT_LINKS = [
+  { name: "モノタロウ", url: "https://www.monotaro.com/s/?q={q}" },
+  { name: "Googleショッピング", url: "https://www.google.com/search?tbm=shop&q={q}" },
+  { name: "Google検索", url: "https://www.google.com/search?q={q}" },
+  { name: "楽天市場", url: "https://search.rakuten.co.jp/search/mall/{q}/" },
+  { name: "Amazon", url: "https://www.amazon.co.jp/s?k={q}" },
+  { name: "Yahoo!ショッピング", url: "https://shopping.yahoo.co.jp/search?p={q}" },
+  { name: "価格.com", url: "https://kakaku.com/search_results/{q}/" },
+  { name: "電材堂(Google)", url: "https://www.google.com/search?q=site%3Adenzaido.com+{q}" },
+];
+// ===== まとめて検索（PDF/画像/Excel/貼り付け から型番を拾う） =====
+// 重いライブラリは使うときだけ読み込む（起動を遅くしない）
+const LIB_PDF = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+const LIB_PDF_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+const LIB_TESS = "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js";
+function loadScript(src) {
+  return new Promise((res, rej) => {
+    if (document.querySelector('script[data-lib="' + src + '"]')) { res(); return; }
+    const el = document.createElement("script");
+    el.src = src; el.async = true; el.setAttribute("data-lib", src);
+    el.onload = () => res(); el.onerror = () => rej(new Error("ライブラリの読み込みに失敗しました（インターネット接続を確認してください）"));
+    document.head.appendChild(el);
+  });
+}
+async function ensurePdfLib() { if (!window.pdfjsLib) await loadScript(LIB_PDF); try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = LIB_PDF_WORKER; } catch (e) {} return window.pdfjsLib; }
+async function ensureTessLib() { if (!window.Tesseract) await loadScript(LIB_TESS); return window.Tesseract; }
+
+// 型番らしい語だけを拾う（英数字＋ハイフン等・数字と英字の両方を含む。日本語混じり・純数値・日付・金額は除外）
+const MODEL_STOP = /^(no|tel|fax|www|http|https|ver|rev|jis|jan|ac|dc|led|max|min|type|model|品番|型番)$/i;
+function extractModels(text) {
+  const out = []; const seen = {};
+  // パナソニック等の「品番＋サフィックス」（例: XFX450DHN LE9）を1語に結合してから分割
+  const pre = String(text || "").normalize("NFKC").replace(/([0-9A-Za-z][0-9A-Za-z\-\/.]{3,})[ \t]+(L[A-Za-z][0-9])\b/g, "$1$2");
+  const toks = pre.split(/[\s,、，\t\r\n|;；:：()（）\[\]【】"'`\\]+/);
+  for (let i = 0; i < toks.length; i++) {
+    let t = toks[i].replace(/^[^0-9A-Za-z]+/, "").replace(/[^0-9A-Za-z]+$/, "");
+    if (t.length < 3 || t.length > 40) continue;
+    if (!/^[0-9A-Za-z\-\/.]+$/.test(t)) continue;   // 日本語や記号混じりは型番でない
+    if (!/[0-9]/.test(t) || !/[A-Za-z]/.test(t)) continue; // 数字と英字の両方を含むものだけ
+    if (MODEL_STOP.test(t)) continue;
+    if (/^\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}$/.test(t)) continue; // 日付
+    const k = t.toUpperCase();
+    if (seen[k]) continue;
+    seen[k] = 1; out.push(k);
+  }
+  return out;
+}
+// OCRの読み違い（O↔0, I/l↔1, B↔8, S↔5, Z↔2）を吸収した比較用キー
+const foldOcr = (v) => norm(v).replace(/[o]/g, "0").replace(/[il]/g, "1").replace(/b/g, "8").replace(/s/g, "5").replace(/z/g, "2");
+// 1件の検索語を社内データに照合。型番完全一致 → OCR補正一致 → 型番部分一致 → 品名一致 → 見積マスタ名称 の順
+// ネット価格DBの照合：型番キー完全一致 → OCR補正一致。採用価格（adoptedId、無ければ最新）を返す
+function marketAdopted(rec) { if (!rec || !rec.entries || !rec.entries.length) return null; return rec.entries.find((e) => e.id === rec.adoptedId) || rec.entries[0]; }
+function marketLookup(term, market) {
+  if (!market) return null;
+  const k = norm(term); if (!k) return null;
+  const hit = (key, via) => { const rec = market[key]; const e = marketAdopted(rec); return e ? { rec, entry: e, via } : null; };
+  let h = hit(k, "ネット価格"); if (h) return h;
+  const fk = foldOcr(term);
+  const keys = Object.keys(market);
+  for (let i = 0; i < keys.length; i++) { const r = market[keys[i]]; if (foldOcr(r.model || keys[i]) === fk) { h = hit(keys[i], "ネット価格(補正)"); if (h) return h; } }
+  return null;
+}
+function matchInternal(term, zairyo, sekisan, market) {
+  const k = norm(term); if (!k) return null;
+  const zs = (zairyo && zairyo.items) || []; const ms = (sekisan && sekisan.master) || [];
+  const asZ = (x, via) => ({ via, src: "仕入実績", name: x.name, model: x.model, maker: x.maker, vendor: x.vendor, cat: x.cat, unit: x.unit, price: num(x.price), listPrice: x.listPrice, date: x.date });
+  const asM = (x, via) => ({ via, src: "見積マスタ", name: x.name, model: "", maker: "", vendor: "", cat: x.cat, unit: x.unit, price: num(x.mat), listPrice: "", date: x.editedAt || "" });
+  let f = zs.filter((x) => norm(x.model) && norm(x.model) === k);
+  if (f.length) return { ...asZ(f[0], "型番一致"), more: f.length - 1 };
+  const fk = foldOcr(term);
+  f = zs.filter((x) => x.model && foldOcr(x.model) === fk);
+  if (f.length) return { ...asZ(f[0], "OCR補正一致"), more: f.length - 1 };
+  f = zs.filter((x) => norm(x.model) && (norm(x.model).indexOf(k) >= 0 || k.indexOf(norm(x.model)) >= 0));
+  if (f.length) return { ...asZ(f[0], "型番部分一致"), more: f.length - 1 };
+  f = zs.filter((x) => norm(x.name).indexOf(k) >= 0);
+  if (f.length) return { ...asZ(f[0], "品名一致"), more: f.length - 1 };
+  const g = ms.filter((x) => norm(x.name).indexOf(k) >= 0);
+  if (g.length) return { ...asM(g[0], "名称一致"), more: g.length - 1 };
+  // 社内に無ければ、以前ネットで調べて保存した価格を当てる
+  const mh = marketLookup(term, market);
+  if (mh) return { via: mh.via, src: "ネット価格", name: mh.rec.name || "", model: mh.rec.model || term, maker: mh.rec.maker || "", vendor: mh.entry.source || "ネット", cat: "", unit: mh.rec.unit || "", price: num(mh.entry.price), listPrice: "", date: mh.entry.savedAt || "", more: (mh.rec.entries.length - 1), url: mh.entry.url || "" };
+  return null;
+}
+
+// ===== 資料（カタログ・仕様書・姿図）リンク =====
+// メーカー公式サイト。site が分かるものは site: 検索で絞り、不明なものはメーカー名キーワードで検索する。
+const MAKER_SITES = [
+  { name: "パナソニック", match: ["パナソニック", "panasonic", "パナ"], site: "panasonic.biz" },
+  { name: "オーデリック", match: ["オーデリック", "odelic"], site: "odelic.co.jp" },
+  { name: "東芝ライテック", match: ["東芝", "toshiba"], site: "tlt.co.jp" },
+  { name: "三菱電機", match: ["三菱", "mitsubishi"], site: "mitsubishielectric.co.jp" },
+  { name: "日立", match: ["日立", "hitachi"], site: "hitachi.co.jp" },
+  { name: "遠藤照明", match: ["遠藤", "endo"], site: "endo-lighting.co.jp" },
+  { name: "アイリスオーヤマ", match: ["アイリス", "iris"], site: "irisohyama.co.jp" },
+  { name: "日東工業", match: ["日東工業", "nito"], site: "nito.co.jp" },
+  { name: "河村電器", match: ["河村", "kawamura"], site: "kawamura.co.jp" },
+  { name: "未来工業", match: ["未来工業", "mirai"], site: "mirai.co.jp" },
+  { name: "因幡電工", match: ["因幡", "inaba"], site: "inaba.co.jp" },
+  { name: "ダイキン", match: ["ダイキン", "daikin"], site: "daikin.co.jp" },
+  { name: "大光電機(DAIKO)", match: ["大光", "daiko"], site: "" },
+  { name: "コイズミ照明", match: ["コイズミ", "koizumi"], site: "" },
+  { name: "ネグロス電工", match: ["ネグロス", "negurosu"], site: "" },
+  { name: "パトライト", match: ["パトライト", "patlite"], site: "" },
+  { name: "テンパール", match: ["テンパール", "tempearl"], site: "" },
+  { name: "富士電機", match: ["富士電機", "fuji"], site: "" },
+];
+// 資料の種別。q＝Google検索に足すキーワード。pdf=true は filetype:pdf で実ファイルに絞る。
+const DOC_KINDS = [
+  { key: "catalog", label: "📕 カタログ", q: "カタログ", pdf: true },
+  { key: "spec", label: "📘 仕様書", q: "仕様書 OR 技術資料", pdf: true },
+  { key: "drawing", label: "📐 姿図・外形図", q: "姿図 OR 外形図 OR 寸法図", pdf: true },
+  { key: "manual", label: "🔧 施工説明書", q: "施工説明書 OR 取扱説明書", pdf: true },
+  { key: "cad", label: "📁 CADデータ", q: "CAD OR DXF OR JWW" },
+  { key: "image", label: "🖼 画像で姿図", q: "姿図 OR 外形図", mode: "image" },
+];
+const DOC_KIND_NAMES = ["カタログ", "仕様書", "姿図・外形図", "施工説明書", "CADデータ", "その他"];
+// ===== メーカー直リンク（URLパターン） =====
+// 実物のURLを {modelU} 等に置き換えて登録すると、以後その形で品番ごとに直接開ける。
+// 既定＝パナソニック施設照明（実際にPDF/画像が取得できることを確認済み。2026-09-03）。
+// ※仕様図と電子カタログは日付＋内部IDのURLで品番から組み立てられないため、製品ページ検索を用意している。
+const DEFAULT_URL_PATTERNS = [
+  { id: "pana-sugata", name: "📐 姿図（PDF）", maker: "パナソニック", url: "https://www2.panasonic.biz/jp/catalog/lighting/products/nsl/image/preview/doc/{modelU}.pdf", note: "施設照明の品番のみ" },
+  { id: "pana-sugata-img", name: "🖼 姿図（画像）", maker: "パナソニック", url: "https://www2.panasonic.biz/jp/catalog/lighting/products/nsl/image/preview/img/{modelU}.jpg", note: "" },
+  { id: "pana-cad", name: "📁 CAD図", maker: "パナソニック", url: "https://www2.panasonic.biz/jp/catalog/lighting/products/nsl/cad/gif/{modelU}.gif", note: "" },
+  { id: "pana-detail", name: "🏭 製品ページ（仕様図・電子カタログはここから）", maker: "パナソニック", url: "https://www.google.com/search?q=site%3Awww2.panasonic.biz+{modelU}", note: "仕様図・電子カタログのリンクが揃っています" },
+];
+// 品番の表記ゆれを吸収：{modelU}=スペース除去の大文字（例「XFX450DHN LE9」→「XFX450DHNLE9」）
+const modelUpper = (m) => String(m || "").replace(/[\s　]/g, "").toUpperCase();
+function fillUrlPattern(tpl, model, maker, name) {
+  const mu = modelUpper(model);
+  return String(tpl || "")
+    .replace(/\{modelU\}/g, encodeURIComponent(mu))
+    .replace(/\{modelL\}/g, encodeURIComponent(mu.toLowerCase()))
+    .replace(/\{model\}/g, encodeURIComponent(String(model || "").trim()))
+    .replace(/\{maker\}/g, encodeURIComponent(maker || ""))
+    .replace(/\{name\}/g, encodeURIComponent(name || ""));
+}
+// そのメーカーに使えるパターン（maker空＝全メーカー共通）
+const patternsFor = (settings, maker) => ((settings && settings.urlPatterns) || []).filter((p) => {
+  if (!p.url) return false;
+  if (!p.maker) return true;
+  return norm(maker || "").indexOf(norm(p.maker)) >= 0;
+});
+
+// 資料の紐づけキー＝型番（無ければ品名）を正規化したもの
+const docKeyOf = (it) => norm((it && it.model) || "") || norm((it && it.name) || "");
+const makerSiteOf = (maker) => { const m = norm(maker || ""); if (!m) return null; return MAKER_SITES.find((s) => s.match.some((k) => m.includes(norm(k)))) || null; };
+// 型番＋メーカーから資料検索URLを組み立てる（サイトが分かればsite:で絞る／無ければメーカー名を語に足す）
+function docSearchUrl(term, kind, maker) {
+  const ms = makerSiteOf(maker);
+  const parts = [term];
+  if (ms && ms.site) parts.push("site:" + ms.site); else if (ms) parts.push(ms.name); else if (maker) parts.push(maker);
+  if (kind && kind.q) parts.push(kind.q);
+  if (kind && kind.pdf) parts.push("filetype:pdf");
+  const q = encodeURIComponent(parts.filter(Boolean).join(" "));
+  return (kind && kind.mode === "image") ? ("https://www.google.com/search?tbm=isch&q=" + q) : ("https://www.google.com/search?q=" + q);
+}
+// 保存する資料URL：http(s)はそのまま、Windowsのローカルパスは file:/// に変換して開けるようにする
+const toDocHref = (u) => { const v = String(u || "").trim(); if (/^https?:\/\//i.test(v) || /^file:\/\//i.test(v)) return v; if (/^[A-Za-z]:[\\\/]/.test(v)) return "file:///" + v.replace(/\\/g, "/"); return v; };
+const DEFAULT_SETTINGS = { taxRate: 10, defaultMarkup: 1.3, links: DEFAULT_LINKS, urlPatterns: DEFAULT_URL_PATTERNS, company: { name: "", address: "", tel: "", fax: "", invoice: "", rep: "" }, priceOnSheet: false };
+const blankCase = () => ({ id: uid(), name: "", memo: "", rows: [], dest: { vendor: "", due: "", place: "", note: "" }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+const blankRow = (mk) => ({ id: uid(), name: "", model: "", maker: "", vendor: "", catName: "", unit: "", qty: 1, cost: "", listPrice: "", markup: mk, bid: "", bidManual: false, note: "" });
+const rowBid = (r) => { const b = num(r.bid); if (r.bidManual && b > 0) return b; const c = num(r.cost); const mk = num(r.markup) || 1; return b > 0 ? b : Math.round(c * mk); };
+const caseHasContent = (c) => !!(c && ((c.name || "").trim() || (c.rows || []).some((r) => (r.name || "").trim() || (r.model || "").trim() || num(r.cost))));
+
+// ===== バックアップ機構（見積ソフトと同方式） =====
+const KEY_GENS = "kakaku_saved_backups";   // IDB内ローリング世代バックアップ（案件一覧・最大10世代）
+const KEY_DELETED = "kakaku_deleted";      // 削除済み案件の墓石（世代復旧で復活させない）
+const FS_HANDLE_KEY = "fsBackupHandle";    // 自動保存先(File System Access)ハンドルのIDBキー
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const readDeleted = () => { try { const d = JSON.parse(localStorage.getItem(KEY_DELETED) || "{}"); return d && typeof d === "object" ? d : {}; } catch (e) { return {}; } };
+const markDeleted = (id) => { const d = readDeleted(); d[id] = Date.now(); const ks = Object.keys(d); if (ks.length > 300) { ks.sort((a, b) => d[a] - d[b]).slice(0, ks.length - 300).forEach((k) => delete d[k]); } lsSet(KEY_DELETED, JSON.stringify(d)); };
+const caseTs = (x) => (x && (x.ts || Date.parse(x.updatedAt || "") || 0)) || 0;
+// 自動保存先ハンドルの保存/取得（kakaku_store の kv に生ハンドルを put/get。window.storageは文字列前提のため専用に）
+function idbHandleSet(v) { return new Promise((res) => { const r = indexedDB.open("kakaku_store", 1); r.onupgradeneeded = () => { try { r.result.createObjectStore("kv"); } catch (e) {} }; r.onsuccess = () => { const db = r.result; try { const tx = db.transaction("kv", "readwrite"); tx.objectStore("kv").put(v, FS_HANDLE_KEY); tx.oncomplete = () => { db.close(); res(true); }; tx.onerror = () => { db.close(); res(false); }; } catch (e) { db.close(); res(false); } }; r.onerror = () => res(false); }); }
+function idbHandleGet() { return new Promise((res) => { const r = indexedDB.open("kakaku_store", 1); r.onupgradeneeded = () => { try { r.result.createObjectStore("kv"); } catch (e) {} }; r.onsuccess = () => { const db = r.result; try { const tx = db.transaction("kv", "readonly"); const g = tx.objectStore("kv").get(FS_HANDLE_KEY); g.onsuccess = () => { db.close(); res(g.result || null); }; g.onerror = () => { db.close(); res(null); }; } catch (e) { db.close(); res(null); } }; r.onerror = () => res(null); }); }
+// バックアップペイロードが実質空か（空データで良いバックアップを上書きしない保護）
+const payloadEmpty = (p) => { const m = (p && p.main) || {}; const zc = (p && p.zairyo && p.zairyo.items) ? p.zairyo.items.length : 0; const dc = (p && p.docs) ? Object.keys(p.docs).length : 0; const mc = (p && p.market) ? Object.keys(p.market).length : 0; return !((m.cases && m.cases.length) || zc || dc || mc || caseHasContent(m.cur)); };
+
+// 見積ソフト（民間・公共）の1見積JSONと互換の行を作る（importProjectFile/開始画面の個別取込で読める）
+const MITSUMORI_PROJECT = { name: "", client: "", clientHonorific: "御中", note: "", tokki: "", discount: 0, extraExpenses: [], siteMgmtOverride: null, genMgmtOverride: null, location: "", duration: "", validUntil: "見積後14日", paymentTerms: "", remarks: "", koushuKubun: "private", months: 6, estimateNo: "", estimateDate: "", vendors: {}, coverManual: false, coverItems: [] };
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; document.body.appendChild(a); a.click();
+  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1500);
+}
+const safeName = (s) => (s || "").replace(/[\\\/:*?"<>|]/g, "_").slice(0, 40);
+
+// ================= 小物コンポーネント =================
+const Btn = ({ children, onClick, variant, className, disabled, title }) => {
+  const base = "px-2.5 py-1 rounded text-sm shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ";
+  const v = { primary: "bg-cyan-700 text-white hover:bg-cyan-800", sub: "bg-white border border-slate-300 text-slate-700 hover:bg-slate-50", danger: "bg-rose-600 text-white hover:bg-rose-700", ghost: "text-slate-500 hover:bg-slate-200" }[variant || "sub"];
+  return <button type="button" title={title} disabled={disabled} onClick={onClick} className={base + v + " " + (className || "")}>{children}</button>;
+};
+const Card = ({ title, children, right, className }) => (
+  <div className={"bg-white rounded-lg shadow-sm border border-slate-200 p-3 " + (className || "")}>
+    {(title || right) && <div className="flex items-center mb-2"><div className="font-semibold text-slate-700">{title}</div><div className="ml-auto flex gap-1 flex-wrap">{right}</div></div>}
+    {children}
+  </div>
+);
+
+// ================= 材料マスタ.xlsx の読込（SheetJS） =================
+function parseZairyoXlsx(arrayBuffer, fileName) {
+  const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: false });
+  const getRows = (name) => { const ws = wb.Sheets[name]; return ws ? XLSX.utils.sheet_to_json(ws, { header: 1, raw: true, defval: "" }) : null; };
+  const mRows = getRows("材料マスタ") || getRows(wb.SheetNames[0]);
+  if (!mRows || mRows.length < 2) throw new Error("「材料マスタ」シートが見つかりません");
+  const mh = mRows[0].map((h) => String(h || "").trim());
+  const mi = (label) => mh.findIndex((h) => h === label);
+  const cCat = mi("分類"), cMaker = mi("メーカ"), cCode = mi("型番"), cName = mi("品名"), cUnit = mi("単位"),
+    cPrice = mi("最新仕入単価"), cPrev = mi("前回単価"), cDate = mi("最終仕入日"), cVendor = mi("仕入先"), cNote = mi("備考"), cList = mi("定価");
+  if (cName < 0 || cPrice < 0) throw new Error("「品名」「最新仕入単価」列が見つかりません（材料マスタ.xlsxを指定してください）");
+  const items = [];
+  for (let i = 1; i < mRows.length; i++) {
+    const r = mRows[i]; if (!r) continue;
+    const name = String(r[cName] || "").trim(); if (!name) continue;
+    items.push({
+      cat: cCat >= 0 ? String(r[cCat] || "") : "", maker: cMaker >= 0 ? String(r[cMaker] || "") : "",
+      model: cCode >= 0 ? String(r[cCode] || "") : "", name, unit: cUnit >= 0 ? String(r[cUnit] || "") : "",
+      price: r[cPrice] === "" ? "" : num(r[cPrice]), prev: cPrev >= 0 && r[cPrev] !== "" ? num(r[cPrev]) : "",
+      date: cDate >= 0 ? String(r[cDate] || "") : "", vendor: cVendor >= 0 ? String(r[cVendor] || "") : "",
+      note: cNote >= 0 ? String(r[cNote] || "") : "", listPrice: cList >= 0 && r[cList] !== "" ? num(r[cList]) : "",
+    });
+  }
+  let history = [];
+  const hRows = getRows("単価履歴");
+  if (hRows && hRows.length > 1) {
+    const hh = hRows[0].map((h) => String(h || "").trim());
+    const hi = (label) => hh.findIndex((h) => h === label);
+    const hDate = hi("仕入日"), hVendor = hi("仕入先"), hMaker = hi("メーカ"), hCode = hi("型番"), hName = hi("品名"), hQty = hi("数量"), hUnit = hi("単位"), hPrice = hi("単価"), hAmt = hi("金額"), hSite = hi("現場");
+    for (let i = 1; i < hRows.length; i++) {
+      const r = hRows[i]; if (!r) continue;
+      const name = hName >= 0 ? String(r[hName] || "").trim() : "";
+      if (!name && !(hCode >= 0 && r[hCode])) continue;
+      history.push({
+        date: hDate >= 0 ? String(r[hDate] || "") : "", vendor: hVendor >= 0 ? String(r[hVendor] || "") : "",
+        maker: hMaker >= 0 ? String(r[hMaker] || "") : "", model: hCode >= 0 ? String(r[hCode] || "") : "", name,
+        qty: hQty >= 0 ? r[hQty] : "", unit: hUnit >= 0 ? String(r[hUnit] || "") : "",
+        price: hPrice >= 0 && r[hPrice] !== "" ? num(r[hPrice]) : "", amt: hAmt >= 0 && r[hAmt] !== "" ? num(r[hAmt]) : "",
+        site: hSite >= 0 ? String(r[hSite] || "") : "",
+      });
+    }
+  }
+  return { items, history, importedAt: new Date().toLocaleString("ja-JP"), fileName: fileName || "" };
+}
+
+// ================= 見積依頼書 Excel 出力（ExcelJS） =================
+async function exportRequestExcel(cur, settings, showPrice) {
+  const co = settings.company || {};
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("見積依頼書", { pageSetup: { paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.5, right: 0.4, top: 0.6, bottom: 0.5, header: 0.3, footer: 0.3 } } });
+  ws.columns = [{ width: 4.5 }, { width: 12 }, { width: 17 }, { width: 30 }, { width: 6 }, { width: 7 }, { width: 10 }, { width: 12 }, { width: 14 }];
+  const thin = { style: "thin", color: { argb: "FF333333" } };
+  const boxAll = { top: thin, left: thin, bottom: thin, right: thin };
+  let r = 1;
+  ws.mergeCells(r, 1, r, 9);
+  const tc = ws.getCell(r, 1); tc.value = "御 見 積 依 頼 書"; tc.font = { size: 16, bold: true, underline: "double" }; tc.alignment = { horizontal: "center", vertical: "middle" };
+  ws.getRow(r).height = 28; r += 1;
+  ws.mergeCells(r, 7, r, 9); ws.getCell(r, 7).value = "発行日：" + jpDate(today()); ws.getCell(r, 7).alignment = { horizontal: "right" }; r += 2;
+  // 宛名（左）
+  const vr = r;
+  ws.mergeCells(vr, 1, vr, 4);
+  const vc = ws.getCell(vr, 1); vc.value = ((cur.dest.vendor || "").trim() || "　　　　　　　　") + "　御中"; vc.font = { size: 13, bold: true };
+  vc.border = { bottom: { style: "thin", color: { argb: "FF333333" } } };
+  // 会社情報（右）
+  const coLines = [co.name || "", co.address || "", [co.tel ? "TEL " + co.tel : "", co.fax ? "FAX " + co.fax : ""].filter(Boolean).join("　"), co.invoice ? "登録番号 " + co.invoice : "", co.rep ? "担当：" + co.rep : ""].filter(Boolean);
+  coLines.forEach((line, i) => { ws.mergeCells(vr + i, 6, vr + i, 9); const c = ws.getCell(vr + i, 6); c.value = line; c.font = { size: i === 0 ? 12 : 9.5, bold: i === 0 }; c.alignment = { wrapText: true } });
+  r = Math.max(vr + coLines.length, vr + 2) + 1;
+  ws.mergeCells(r, 1, r, 9); ws.getCell(r, 1).value = "下記のとおり、お見積りをお願い申し上げます。"; r += 2;
+  const info = [["件名", cur.name || ""], ["納期", cur.dest.due || ""], ["受渡場所", cur.dest.place || ""], ["備考", cur.dest.note || ""]];
+  info.forEach(([k, v]) => { if (!v && k !== "件名") return; ws.getCell(r, 1).value = k; ws.getCell(r, 1).font = { bold: true }; ws.mergeCells(r, 2, r, 9); const c = ws.getCell(r, 2); c.value = v; c.border = { bottom: { style: "hair", color: { argb: "FF666666" } } }; r += 1; });
+  r += 1;
+  // 明細表
+  const heads = ["No", "メーカ", "型番", "品名", "単位", "数量", "単価", "金額", "備考"];
+  heads.forEach((h, i) => { const c = ws.getCell(r, i + 1); c.value = h; c.border = boxAll; c.alignment = { horizontal: "center" }; c.font = { bold: true }; });
+  r += 1;
+  const rows = (cur.rows || []).filter((x) => (x.name || "").trim() || (x.model || "").trim());
+  const firstData = r;
+  rows.forEach((x, i) => {
+    const qty = num(x.qty);
+    const vals = [i + 1, x.maker || "", x.model || "", x.name || "", x.unit || "", qty || "", "", "", x.note || ""];
+    vals.forEach((v, ci) => { const c = ws.getCell(r, ci + 1); c.value = v; c.border = boxAll; if (ci === 0 || ci === 4) c.alignment = { horizontal: "center" }; if (ci === 5) c.alignment = { horizontal: "right" }; });
+    if (showPrice) {
+      const cost = num(x.cost);
+      const pc = ws.getCell(r, 7); pc.value = cost || ""; pc.numFmt = "#,##0"; pc.alignment = { horizontal: "right" }; pc.border = boxAll;
+      const ac = ws.getCell(r, 8);
+      if (qty && cost) { ac.value = { formula: "F" + r + "*G" + r, result: Math.round(qty * cost) }; } else { ac.value = ""; }
+      ac.numFmt = "#,##0"; ac.alignment = { horizontal: "right" }; ac.border = boxAll;
+    }
+    r += 1;
+  });
+  // 空欄行を3行（先方追記用）
+  for (let i = 0; i < 3; i++) { for (let ci = 1; ci <= 9; ci++) { const c = ws.getCell(r, ci); c.value = ""; c.border = boxAll; } r += 1; }
+  if (showPrice && rows.length) {
+    ws.mergeCells(r, 1, r, 7); const lc = ws.getCell(r, 1); lc.value = "合計（税抜）"; lc.alignment = { horizontal: "center" }; lc.font = { bold: true }; lc.border = boxAll;
+    const sc = ws.getCell(r, 8); sc.value = { formula: "SUM(H" + firstData + ":H" + (r - 1) + ")", result: rows.reduce((s, x) => s + Math.round(num(x.qty) * num(x.cost)), 0) };
+    sc.numFmt = "#,##0"; sc.font = { bold: true }; sc.alignment = { horizontal: "right" }; sc.border = boxAll;
+    ws.getCell(r, 9).border = boxAll; r += 1;
+  }
+  r += 1;
+  ws.mergeCells(r, 1, r, 9); const ic = ws.getCell(r, 1); ic.value = "以　上"; ic.alignment = { horizontal: "right" };
+  const buf = await wb.xlsx.writeBuffer();
+  const nm = ["見積依頼書", safeName(cur.name), safeName(cur.dest.vendor), ymdStr()].filter(Boolean).join("_") + ".xlsx";
+  downloadBlob(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), nm);
+  return nm;
+}
+
+// ================= 印刷プレビュー（見積依頼書） =================
+function RequestSheet({ cur, settings, showPrice }) {
+  const co = settings.company || {};
+  const rows = (cur.rows || []).filter((x) => (x.name || "").trim() || (x.model || "").trim());
+  const total = rows.reduce((s, x) => s + Math.round(num(x.qty) * num(x.cost)), 0);
+  return (
+    <div className="paper shadow">
+      <div className="text-center text-xl font-bold tracking-widest" style={{ borderBottom: "1px double #000", paddingBottom: 4 }}>御 見 積 依 頼 書</div>
+      <div className="text-right text-xs mt-2">発行日：{jpDate(today())}</div>
+      <div className="flex mt-4">
+        <div className="text-base font-bold" style={{ borderBottom: "0.5px solid #333", minWidth: "45%", paddingBottom: 2 }}>
+          {(cur.dest.vendor || "").trim() || "　　　　　　　　"}　御中
+        </div>
+        <div className="ml-auto text-xs leading-5 text-right">
+          <div className="text-sm font-bold">{co.name}</div>
+          <div>{co.address}</div>
+          <div>{[co.tel ? "TEL " + co.tel : "", co.fax ? "FAX " + co.fax : ""].filter(Boolean).join("　")}</div>
+          {co.invoice ? <div>登録番号 {co.invoice}</div> : null}
+          {co.rep ? <div>担当：{co.rep}</div> : null}
+        </div>
+      </div>
+      <div className="mt-4 text-sm">下記のとおり、お見積りをお願い申し上げます。</div>
+      <table className="mt-2 text-sm" style={{ width: "70%" }}>
+        <tbody>
+          <tr><td className="font-semibold pr-3" style={{ whiteSpace: "nowrap" }}>件名</td><td style={{ borderBottom: "0.5px solid #666", width: "100%" }}>{cur.name}</td></tr>
+          {cur.dest.due ? <tr><td className="font-semibold pr-3">納期</td><td style={{ borderBottom: "0.5px solid #666" }}>{cur.dest.due}</td></tr> : null}
+          {cur.dest.place ? <tr><td className="font-semibold pr-3" style={{ whiteSpace: "nowrap" }}>受渡場所</td><td style={{ borderBottom: "0.5px solid #666" }}>{cur.dest.place}</td></tr> : null}
+          {cur.dest.note ? <tr><td className="font-semibold pr-3">備考</td><td style={{ borderBottom: "0.5px solid #666" }}>{cur.dest.note}</td></tr> : null}
+        </tbody>
+      </table>
+      <table className="req mt-4">
+        <thead><tr><th style={{ width: 26 }}>No</th><th style={{ width: 70 }}>メーカ</th><th style={{ width: 110 }}>型番</th><th>品名</th><th style={{ width: 34 }}>単位</th><th style={{ width: 44 }}>数量</th><th style={{ width: 62 }}>単価</th><th style={{ width: 74 }}>金額</th><th style={{ width: 84 }}>備考</th></tr></thead>
+        <tbody>
+          {rows.map((x, i) => (
+            <tr key={x.id}>
+              <td className="text-center">{i + 1}</td><td>{x.maker}</td><td>{x.model}</td><td>{x.name}</td>
+              <td className="text-center">{x.unit}</td><td className="num">{num(x.qty) || ""}</td>
+              <td className="num">{showPrice ? yen(num(x.cost) || "") : ""}</td>
+              <td className="num">{showPrice && num(x.qty) && num(x.cost) ? yen(num(x.qty) * num(x.cost)) : ""}</td>
+              <td>{x.note}</td>
+            </tr>
+          ))}
+          {[0, 1, 2].map((i) => <tr key={"e" + i}><td>&nbsp;</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>)}
+          {showPrice && rows.length ? <tr><td colSpan={7} className="text-center font-semibold">合計（税抜）</td><td className="num font-semibold">{yen(total)}</td><td></td></tr> : null}
+        </tbody>
+      </table>
+      <div className="text-right text-sm mt-4">以　上</div>
+    </div>
+  );
+}
+
+// ================= 資料モーダル（カタログ・仕様書・姿図） =================
+function DocsModal({ item, docs, settings, onSaveDocs, onClose }) {
+  const key = docKeyOf(item);
+  const list = (docs && docs[key]) || [];
+  const term = ((item.model || "").trim() || (item.name || "").trim());
+  // メーカーは自動判定＋手動変更可（見積マスタ由来や貼り付け型番はメーカー情報が無いため）
+  const [mk, setMk] = useState(() => { const m = makerSiteOf(item.maker); return m ? m.name : (item.maker || ""); });
+  const ms = makerSiteOf(mk);
+  const pats = patternsFor(settings, mk);
+  const hasModel = !!(item.model || "").trim();
+  const [f, setF] = useState({ title: "", kind: "カタログ", url: "", note: "" });
+  const open = (url) => window.open(url, "_blank");
+  const add = () => {
+    const url = (f.url || "").trim();
+    if (!url) { alert("資料のURL（またはパソコン内のファイルパス）を入力してください。"); return; }
+    const entry = { id: uid(), title: (f.title || "").trim() || (f.kind + "（" + term + "）"), kind: f.kind, url, note: (f.note || "").trim(), savedAt: new Date().toLocaleString("ja-JP") };
+    onSaveDocs(key, [...list, entry]);
+    setF({ title: "", kind: f.kind, url: "", note: "" });
+  };
+  const del = (id) => { if (confirm("この資料の登録を削除しますか？（ファイル自体は消えません）")) onSaveDocs(key, list.filter((x) => x.id !== id)); };
+  const inp = "w-full border border-slate-300 rounded px-2 py-1 text-sm";
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-start justify-center p-4 overflow-auto" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full my-6 p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center mb-2">
+          <div className="font-semibold">📄 資料をさがす：{item.name} <span className="font-mono text-sm text-slate-500">{item.model}</span>{item.maker ? <span className="text-sm text-slate-500">（{item.maker}）</span> : null}</div>
+          <Btn variant="ghost" className="ml-auto" onClick={onClose}>✕ 閉じる</Btn>
+        </div>
+        {!term ? <div className="text-sm text-rose-600">型番・品名が空のため検索できません。</div> : (
+          <>
+            <div className="flex items-center gap-2 flex-wrap mb-2">
+              <span className="text-xs text-slate-500">メーカー</span>
+              <select value={mk} onChange={(e) => setMk(e.target.value)} className="border border-slate-300 rounded px-2 py-1 text-sm">
+                <option value="">（指定なし）</option>
+                {MAKER_SITES.map((m) => <option key={m.name} value={m.name}>{m.name}</option>)}
+                {mk && !MAKER_SITES.some((m) => m.name === mk) ? <option value={mk}>{mk}</option> : null}
+              </select>
+              <span className="text-xs text-slate-400">メーカーを選ぶと、そのメーカー専用の直リンクが出ます</span>
+            </div>
+
+            {pats.length > 0 && (
+              <div className="border-2 border-cyan-200 bg-cyan-50/40 rounded p-2.5 mb-2">
+                <div className="text-sm font-semibold mb-1.5">🎯 {mk} の直リンク（型番から直接ひらく）</div>
+                {hasModel ? (
+                  <>
+                    <div className="flex gap-1.5 flex-wrap">
+                      {pats.map((p) => <Btn key={p.id} variant="primary" title={p.note || fillUrlPattern(p.url, item.model, mk, item.name)} onClick={() => open(fillUrlPattern(p.url, item.model, mk, item.name))}>{p.name}</Btn>)}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-1.5">品番「{modelUpper(item.model)}」で直接ひらきます。該当が無い品番は相手先サイトで「見つかりません」になります（その場合は下の検索をお使いください）。</div>
+                  </>
+                ) : <div className="text-sm text-amber-700">直リンクには型番が必要です（この品目は型番が未登録のため、下の検索をお使いください）。</div>}
+              </div>
+            )}
+
+            <div className="border border-slate-200 rounded p-2.5 mb-2">
+              <div className="text-sm font-semibold mb-1.5">🔎 資料を検索（クリックで別タブに開く → PDFをダウンロード）</div>
+              <div className="flex gap-1.5 flex-wrap">
+                {DOC_KINDS.map((k) => <Btn key={k.key} onClick={() => open(docSearchUrl(term, k, mk))}>{k.label}</Btn>)}
+              </div>
+              <div className="flex gap-1.5 flex-wrap mt-1.5">
+                {ms ? <Btn variant="primary" onClick={() => open(docSearchUrl(term, null, mk))}>🏭 {ms.name}{ms.site ? " の公式サイトで型番検索" : " ＋型番で検索"}</Btn> : null}
+                <Btn onClick={() => open("https://www.google.com/search?q=" + encodeURIComponent(term + " " + (mk || "")))}>🌐 型番をそのまま検索</Btn>
+              </div>
+              <div className="text-xs text-slate-400 mt-1.5">
+                {ms ? "メーカー「" + ms.name + "」で検索します。" : "メーカー未指定のため、型番＋資料キーワードで検索します。"}
+                　※ダウンロードしたPDFは、下の「見つけた資料を登録」にURLか保存先パスを控えておくと次回すぐ開けます。
+              </div>
+            </div>
+
+            <div className="border border-slate-200 rounded p-2.5 mb-2">
+              <div className="text-sm font-semibold mb-1.5">📎 この品目に登録した資料（{list.length}件）</div>
+              {list.length ? (
+                <table className="tbl text-sm w-full">
+                  <thead><tr><th style={{ width: 92 }}>種別</th><th>資料名</th><th style={{ width: 120 }}>備考</th><th style={{ width: 120 }}>登録日時</th><th style={{ width: 110 }}>操作</th></tr></thead>
+                  <tbody>{list.map((d) => (
+                    <tr key={d.id}>
+                      <td className="text-center">{d.kind}</td>
+                      <td className="max-w-[22rem] truncate" title={d.url}>{d.title}</td>
+                      <td className="max-w-[8rem] truncate" title={d.note}>{d.note}</td>
+                      <td className="text-xs text-slate-500">{d.savedAt}</td>
+                      <td><div className="flex gap-1">
+                        <Btn variant="primary" onClick={() => open(toDocHref(d.url))}>開く</Btn>
+                        <Btn variant="danger" onClick={() => del(d.id)}>削除</Btn>
+                      </div></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              ) : <div className="text-sm text-slate-400">まだ登録がありません。</div>}
+            </div>
+
+            <div className="border border-slate-200 rounded p-2.5">
+              <div className="text-sm font-semibold mb-1.5">＋ 見つけた資料を登録（次回はワンクリックで開けます）</div>
+              <div className="grid sm:grid-cols-4 gap-2">
+                <label className="text-sm"><span className="text-xs text-slate-500">種別</span>
+                  <select value={f.kind} onChange={(e) => setF({ ...f, kind: e.target.value })} className={inp}>{DOC_KIND_NAMES.map((k) => <option key={k} value={k}>{k}</option>)}</select></label>
+                <label className="text-sm sm:col-span-2"><span className="text-xs text-slate-500">資料名（省略可）</span>
+                  <input value={f.title} onChange={(e) => setF({ ...f, title: e.target.value })} placeholder="例：総合カタログ2026 P.128" className={inp} /></label>
+                <label className="text-sm"><span className="text-xs text-slate-500">備考</span>
+                  <input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} className={inp} /></label>
+                <label className="text-sm sm:col-span-3"><span className="text-xs text-slate-500">URL または パソコン内のファイルパス</span>
+                  <input value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} placeholder="https://….pdf ／ C:\Users\…\カタログ.pdf" className={inp + " font-mono"} /></label>
+                <div className="flex items-end"><Btn variant="primary" className="w-full" onClick={add}>＋ 登録</Btn></div>
+              </div>
+              <div className="text-xs text-slate-400 mt-1">ダウンロードしたPDFをドライブ内に保存し、そのパスを登録しておけば社内で共有できます。登録内容はバックアップにも含まれます。</div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ================= ネット価格モーダル（市場価格を調べて保存・採用） =================
+function PriceModal({ item, market, settings, onSave, onAdopt, onClose }) {
+  const key = docKeyOf(item);
+  const rec = (market && market[key]) || null;
+  const entries = (rec && rec.entries) || [];
+  const term = ((item.model || "").trim() || (item.name || "").trim());
+  const adopted = marketAdopted(rec);
+  const [f, setF] = useState({ price: "", source: "", url: "", note: "", unit: (rec && rec.unit) || item.unit || "", name: (rec && rec.name) || item.name || "", maker: (rec && rec.maker) || item.maker || "" });
+  const sources = useMemo(() => { const st = new Set(); (settings.links || []).forEach((l) => { if (l.name) st.add(l.name); }); Object.keys(market || {}).forEach((k) => ((market[k].entries) || []).forEach((e) => { if (e.source) st.add(e.source); })); return Array.from(st); }, [market, settings]);
+  const open = (u) => window.open(u, "_blank");
+  const add = () => {
+    const p = num(f.price);
+    if (!(p > 0)) { alert("ネットで調べた価格（税抜）を入力してください。"); return; }
+    const e = { id: uid(), price: Math.round(p), source: (f.source || "").trim(), url: (f.url || "").trim(), note: (f.note || "").trim(), savedAt: new Date().toLocaleString("ja-JP") };
+    onSave(key, { model: (rec && rec.model) || (item.model || "").trim(), name: (f.name || "").trim(), maker: (f.maker || "").trim(), unit: (f.unit || "").trim(), adoptedId: e.id, entries: [e, ...entries] });
+    setF({ ...f, price: "", url: "", note: "" });
+  };
+  const adopt = (id) => onSave(key, { ...rec, adoptedId: id });
+  const del = (id) => { if (!confirm("この価格の登録を削除しますか？")) return; const left = entries.filter((e) => e.id !== id); onSave(key, left.length ? { ...rec, entries: left, adoptedId: rec.adoptedId === id ? left[0].id : rec.adoptedId } : null); };
+  const inp = "w-full border border-slate-300 rounded px-2 py-1 text-sm";
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-start justify-center p-4 overflow-auto" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full my-6 p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center mb-2">
+          <div className="font-semibold">💹 ネット価格：<span className="font-mono">{item.model || ""}</span> <span className="text-sm text-slate-500">{item.name}</span></div>
+          <Btn variant="ghost" className="ml-auto" onClick={onClose}>✕ 閉じる</Btn>
+        </div>
+        {!term ? <div className="text-sm text-rose-600">型番・品名が空のため登録できません。</div> : (
+          <>
+            <div className={"rounded p-2.5 mb-2 border-2 " + (adopted ? "border-sky-300 bg-sky-50/50" : "border-slate-200")}>
+              <div className="text-sm font-semibold mb-1">採用中のネット価格</div>
+              {adopted ? (
+                <div className="flex items-baseline gap-3 flex-wrap">
+                  <span className="text-2xl font-bold text-sky-800">¥{yen(adopted.price)}</span>
+                  <span className="text-sm text-slate-600">{rec.unit ? "／" + rec.unit : ""}　{adopted.source || "出典なし"}　<span className="text-xs text-slate-400">{adopted.savedAt}</span></span>
+                  {adopted.url ? <Btn variant="ghost" onClick={() => open(toDocHref(adopted.url))}>🔗 出典を開く</Btn> : null}
+                  {onAdopt ? <Btn variant="primary" className="ml-auto" onClick={() => { onAdopt(adopted, rec); onClose(); }}>✔ この価格を行に反映</Btn> : null}
+                </div>
+              ) : <div className="text-sm text-slate-500">未登録です。下のリンクで調べて、見つけた価格を登録してください。</div>}
+            </div>
+
+            <div className="border border-slate-200 rounded p-2.5 mb-2">
+              <div className="text-sm font-semibold mb-1.5">🌐 ネットで調べる（クリックで別タブ）</div>
+              <div className="flex gap-1.5 flex-wrap">
+                {(settings.links || []).map((l, i) => <Btn key={i} onClick={() => open(l.url.replace("{q}", encodeURIComponent(term)))}>{l.name}</Btn>)}
+              </div>
+            </div>
+
+            <div className="border border-slate-200 rounded p-2.5 mb-2">
+              <div className="text-sm font-semibold mb-1.5">＋ 調べた価格を登録（新しく登録した価格が採用になります）</div>
+              <div className="grid sm:grid-cols-6 gap-2">
+                <label className="text-sm"><span className="text-xs text-slate-500">価格（税抜）</span><input type="number" value={f.price} onChange={(e) => setF({ ...f, price: e.target.value })} className={inp + " text-right"} placeholder="例: 12800" /></label>
+                <label className="text-sm"><span className="text-xs text-slate-500">単位</span><input value={f.unit} onChange={(e) => setF({ ...f, unit: e.target.value })} list="unitList2" className={inp} placeholder="台" /></label>
+                <label className="text-sm sm:col-span-2"><span className="text-xs text-slate-500">出典（サイト名・店名）</span><input value={f.source} onChange={(e) => setF({ ...f, source: e.target.value })} list="priceSourceList" className={inp} placeholder="例: モノタロウ" /></label>
+                <label className="text-sm sm:col-span-2"><span className="text-xs text-slate-500">備考</span><input value={f.note} onChange={(e) => setF({ ...f, note: e.target.value })} className={inp} placeholder="例: 送料別・在庫あり" /></label>
+                <label className="text-sm sm:col-span-4"><span className="text-xs text-slate-500">URL（価格を見たページ・任意）</span><input value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} className={inp + " font-mono"} placeholder="https://…" /></label>
+                <label className="text-sm"><span className="text-xs text-slate-500">品名</span><input value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className={inp} /></label>
+                <label className="text-sm"><span className="text-xs text-slate-500">メーカー</span><input value={f.maker} onChange={(e) => setF({ ...f, maker: e.target.value })} className={inp} /></label>
+              </div>
+              <datalist id="priceSourceList">{sources.map((x) => <option key={x} value={x} />)}</datalist>
+              <datalist id="unitList2">{["式", "台", "個", "m", "本", "袋", "組", "ヶ所"].map((u) => <option key={u} value={u} />)}</datalist>
+              <div className="mt-2 flex"><Btn variant="primary" className="ml-auto" onClick={add}>💾 ネット価格として保存</Btn></div>
+            </div>
+
+            {entries.length > 0 && (
+              <div className="border border-slate-200 rounded p-2.5">
+                <div className="text-sm font-semibold mb-1.5">📜 登録履歴（{entries.length}件）　※「採用」を切り替えると照合・案件に使う価格が変わります</div>
+                <table className="tbl text-sm w-full">
+                  <thead><tr><th style={{ width: 54 }}>採用</th><th style={{ width: 100 }}>価格</th><th>出典</th><th>備考</th><th style={{ width: 130 }}>登録日時</th><th style={{ width: 110 }}>操作</th></tr></thead>
+                  <tbody>{entries.map((e) => (
+                    <tr key={e.id} className={e.id === (adopted && adopted.id) ? "bg-sky-50" : ""}>
+                      <td className="text-center"><input type="radio" name="adoptPrice" checked={e.id === (adopted && adopted.id)} onChange={() => adopt(e.id)} /></td>
+                      <td className="text-right font-semibold">{yen(e.price)}</td>
+                      <td>{e.source}</td>
+                      <td className="max-w-[12rem] truncate" title={e.note}>{e.note}</td>
+                      <td className="text-xs text-slate-500">{e.savedAt}</td>
+                      <td><div className="flex gap-1">
+                        {e.url ? <Btn variant="ghost" onClick={() => open(toDocHref(e.url))}>🔗</Btn> : null}
+                        <Btn variant="danger" onClick={() => del(e.id)}>削除</Btn>
+                      </div></td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ================= 検索タブ =================
+function SearchTab({ q, setQ, sekisan, zairyo, settings, docs, market, onAddRow, onShowHist, onShowDocs, onShowPrice, netQ, setNetQ, netEdited, setNetEdited }) {
+  const toks = useMemo(() => tokens(q), [q]);
+  const res = useMemo(() => {
+    if (!toks.length) return { z: [], m: [], h: [], p: [] };
+    const z = (zairyo.items || []).filter((x) => hitAll(norm([x.cat, x.maker, x.model, x.name, x.vendor].join("␟")), toks));
+    const m = (sekisan.master || []).filter((x) => hitAll(norm([x.cat, x.name, x.sekou].join("␟")), toks));
+    const h = (zairyo.history || []).filter((x) => hitAll(norm([x.maker, x.model, x.name, x.vendor, x.site].join("␟")), toks));
+    const p = Object.keys(market || {}).map((k) => ({ key: k, ...market[k] })).filter((r) => hitAll(norm([r.model, r.name, r.maker, (r.entries || []).map((e) => e.source).join(" ")].join("␟")), toks));
+    return { z, m, h, p };
+  }, [toks, zairyo, sekisan, market]);
+  const LIM = 100;
+  const netTerm = netEdited ? netQ : q;
+  const openLink = (l) => { const t = (netTerm || "").trim(); if (!t) { alert("検索語を入力してください"); return; } window.open(l.url.replace("{q}", encodeURIComponent(t)), "_blank"); };
+  const pickNet = (t) => { setNetQ(t); setNetEdited(true); };
+  const docCount = (it) => ((docs && docs[docKeyOf(it)]) || []).length; // 登録済み資料の件数（📎バッジ用）
+  const openDocKind = (k) => { const t = (netTerm || "").trim(); if (!t) { alert("検索語を入力してください"); return; } window.open(docSearchUrl(t, k, ""), "_blank"); };
+  return (
+    <div className="space-y-3">
+      <Card>
+        <div className="flex gap-2 items-center flex-wrap">
+          <span className="text-xl">🔍</span>
+          <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="型番・品名・メーカ・分類で検索（空白区切りでAND検索。例: GP-16 / OL251359RS / シーリング）"
+            className="flex-1 min-w-[280px] border border-slate-300 rounded px-3 py-2 text-base" />
+          {q && <Btn variant="ghost" onClick={() => setQ("")}>✕ クリア</Btn>}
+        </div>
+        {toks.length > 0 && (
+          <div className="mt-2 text-sm text-slate-600 flex gap-4 flex-wrap">
+            <span>仕入実績 <b className={res.z.length ? "text-cyan-700" : "text-slate-400"}>{res.z.length}</b>件</span>
+            <span>見積マスタ <b className={res.m.length ? "text-cyan-700" : "text-slate-400"}>{res.m.length}</b>件</span>
+            <span>仕入履歴 <b className={res.h.length ? "text-cyan-700" : "text-slate-400"}>{res.h.length}</b>件</span>
+            <span>ネット価格 <b className={res.p.length ? "text-sky-700" : "text-slate-400"}>{res.p.length}</b>件</span>
+            {!res.z.length && !res.m.length && !res.h.length && !res.p.length && <span className="text-rose-600 font-semibold">社内データに見つかりません → 下のネット検索で調べて、見つけた価格を保存できます</span>}
+            {!res.z.length && !res.m.length && !res.h.length && <Btn variant="primary" onClick={() => onShowPrice({ model: q.trim() })}>💹 ネットで調べた価格を保存</Btn>}
+          </div>
+        )}
+      </Card>
+
+      <Card title="🌐 ネット検索（クリックで別タブに開く）">
+        <div className="flex gap-2 items-center flex-wrap mb-2">
+          <input value={netTerm} onChange={(e) => pickNet(e.target.value)} placeholder="ネット検索語（未入力なら上の検索語を使用）"
+            className="flex-1 min-w-[240px] border border-slate-300 rounded px-2 py-1 text-sm" />
+          {netEdited && <Btn variant="ghost" onClick={() => { setNetEdited(false); setNetQ(""); }} title="検索ボックスの語に戻す">↩ 検索語と同期</Btn>}
+        </div>
+        <div className="flex gap-1.5 flex-wrap">
+          {(settings.links || []).map((l, i) => <Btn key={i} onClick={() => openLink(l)}>{l.name}</Btn>)}
+        </div>
+        <div className="mt-2"><Btn variant="primary" onClick={() => { const t = (netTerm || "").trim(); if (!t) { alert("検索語を入力してください"); return; } onShowPrice({ model: t }); }}>💹 この検索語のネット価格を保存</Btn> <span className="text-xs text-slate-400">サイトで見た金額を「ネット価格」として登録すると、次回から検索・照合に出ます</span></div>
+        <div className="text-xs text-slate-500 mt-2.5 mb-1">📄 資料をさがす（カタログ・仕様書・姿図。社内に無い型番でも探せます）</div>
+        <div className="flex gap-1.5 flex-wrap">
+          {DOC_KINDS.map((k) => <Btn key={k.key} onClick={() => openDocKind(k)}>{k.label}</Btn>)}
+        </div>
+        <div className="text-xs text-slate-400 mt-1.5">リンク先は設定タブで追加・編集できます。まとまった相場調査はClaudeに「この型番の相場を調べて」と依頼してください。</div>
+      </Card>
+
+      {toks.length > 0 && res.z.length > 0 && (
+        <Card title={"📦 仕入実績（材料マスタ） " + res.z.length + "件"}>
+          <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
+            <thead><tr><th>分類</th><th>メーカ</th><th>型番</th><th>品名</th><th>単位</th><th>最新仕入</th><th>前回</th><th>定価</th><th>掛率</th><th>最終仕入日</th><th>仕入先</th><th></th></tr></thead>
+            <tbody>{res.z.slice(0, LIM).map((x, i) => {
+              const ratio = (num(x.listPrice) > 0 && num(x.price) > 0) ? (num(x.price) / num(x.listPrice)).toFixed(2) : "";
+              return (<tr key={i} className="hover:bg-cyan-50">
+                <td>{x.cat}</td><td>{x.maker}</td><td className="font-mono">{x.model}{docCount(x) ? <span className="ml-1 text-xs bg-amber-100 text-amber-700 rounded px-1" title="登録済みの資料あり">📎{docCount(x)}</span> : null}</td><td className="max-w-[26rem] truncate" title={x.name}>{x.name}</td><td className="text-center">{x.unit}</td>
+                <td className="text-right font-semibold text-cyan-800">{yen(x.price)}</td><td className="text-right text-slate-500">{yen(x.prev)}</td>
+                <td className="text-right text-slate-500">{yen(x.listPrice)}</td><td className="text-center text-slate-500">{ratio}</td>
+                <td>{x.date}</td><td className="max-w-[10rem] truncate" title={x.vendor}>{x.vendor}</td>
+                <td className="text-center"><div className="flex gap-1">
+                  <Btn variant="ghost" title="この品の仕入履歴" onClick={() => onShowHist(x)}>📈履歴</Btn>
+                  <Btn variant="ghost" title="カタログ・仕様書・姿図をさがす" onClick={() => onShowDocs({ name: x.name, model: x.model, maker: x.maker })}>📄資料</Btn>
+                  <Btn variant="ghost" title="ネット価格を調べて保存" onClick={() => onShowPrice({ name: x.name, model: x.model, maker: x.maker, unit: x.unit })}>💹</Btn>
+                  <Btn variant="ghost" title="ネット検索語にセット" onClick={() => pickNet((x.model || x.name || "").trim())}>🌐</Btn>
+                  <Btn variant="primary" onClick={() => onAddRow({ name: x.name, model: x.model, maker: x.maker, vendor: x.vendor, catName: x.cat, unit: x.unit, cost: num(x.price) || "", listPrice: x.listPrice })}>＋追加</Btn>
+                </div></td>
+              </tr>);
+            })}</tbody>
+          </table></div>
+          {res.z.length > LIM && <div className="text-xs text-slate-400 mt-1">他 {res.z.length - LIM} 件（検索語を絞ってください）</div>}
+        </Card>
+      )}
+
+      {toks.length > 0 && res.m.length > 0 && (
+        <Card title={"🧮 見積ソフトの歩掛りマスタ " + res.m.length + "件（読み取り専用）"}>
+          <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
+            <thead><tr><th>分類</th><th>名称</th><th>施工方法</th><th>単位</th><th>材料費(仕入)</th><th>編集日</th><th></th></tr></thead>
+            <tbody>{res.m.slice(0, LIM).map((x, i) => (
+              <tr key={i} className="hover:bg-cyan-50">
+                <td>{x.cat}</td><td className="max-w-[28rem] truncate" title={x.name}>{x.name}{docCount(x) ? <span className="ml-1 text-xs bg-amber-100 text-amber-700 rounded px-1" title="登録済みの資料あり">📎{docCount(x)}</span> : null}</td><td>{x.sekou || ""}</td><td className="text-center">{x.unit}</td>
+                <td className="text-right font-semibold text-cyan-800">{yen(num(x.mat) || "")}</td><td>{x.editedAt || ""}</td>
+                <td className="text-center"><div className="flex gap-1">
+                  <Btn variant="ghost" title="カタログ・仕様書・姿図をさがす" onClick={() => onShowDocs({ name: x.name, model: "", maker: "" })}>📄資料</Btn>
+                  <Btn variant="ghost" title="ネット価格を調べて保存" onClick={() => onShowPrice({ name: x.name, model: "", maker: "", unit: x.unit })}>💹</Btn>
+                  <Btn variant="ghost" title="ネット検索語にセット" onClick={() => pickNet((x.name || "").trim())}>🌐</Btn>
+                  <Btn variant="primary" onClick={() => onAddRow({ name: x.name, model: "", maker: "", vendor: "", catName: x.cat, unit: x.unit, cost: num(x.mat) || "" })}>＋追加</Btn>
+                </div></td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          {res.m.length > LIM && <div className="text-xs text-slate-400 mt-1">他 {res.m.length - LIM} 件（検索語を絞ってください）</div>}
+        </Card>
+      )}
+
+      {toks.length > 0 && res.h.length > 0 && (
+        <Card title={"🧾 仕入履歴（単価履歴） " + res.h.length + "件"}>
+          <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
+            <thead><tr><th>仕入日</th><th>仕入先</th><th>メーカ</th><th>型番</th><th>品名</th><th>数量</th><th>単位</th><th>単価</th><th>現場</th></tr></thead>
+            <tbody>{res.h.slice(0, LIM).map((x, i) => (
+              <tr key={i}>
+                <td>{x.date}</td><td className="max-w-[10rem] truncate" title={x.vendor}>{x.vendor}</td><td>{x.maker}</td><td className="font-mono">{x.model}</td>
+                <td className="max-w-[22rem] truncate" title={x.name}>{x.name}</td><td className="text-right">{x.qty}</td><td className="text-center">{x.unit}</td>
+                <td className="text-right font-semibold">{yen(x.price)}</td><td className="max-w-[12rem] truncate" title={x.site}>{x.site}</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          {res.h.length > LIM && <div className="text-xs text-slate-400 mt-1">他 {res.h.length - LIM} 件</div>}
+        </Card>
+      )}
+
+      {toks.length > 0 && res.p.length > 0 && (
+        <Card title={"💹 ネット価格（調べて保存した市場価格） " + res.p.length + "件"}>
+          <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
+            <thead><tr><th>型番</th><th>品名</th><th>メーカ</th><th>単位</th><th>採用価格</th><th>出典</th><th>登録日時</th><th>履歴</th><th></th></tr></thead>
+            <tbody>{res.p.slice(0, LIM).map((r) => { const e = marketAdopted(r); return (
+              <tr key={r.key} className="hover:bg-sky-50">
+                <td className="font-mono">{r.model}</td><td className="max-w-[22rem] truncate" title={r.name}>{r.name}</td><td>{r.maker}</td><td className="text-center">{r.unit}</td>
+                <td className="text-right font-semibold text-sky-800">{e ? yen(e.price) : ""}</td><td>{e ? e.source : ""}</td><td className="text-xs text-slate-500">{e ? e.savedAt : ""}</td><td className="text-center">{(r.entries || []).length}件</td>
+                <td className="text-center"><div className="flex gap-1">
+                  <Btn variant="ghost" title="価格の確認・追加・採用切替" onClick={() => onShowPrice({ name: r.name, model: r.model, maker: r.maker, unit: r.unit })}>💹編集</Btn>
+                  <Btn variant="ghost" title="カタログ・仕様書・姿図をさがす" onClick={() => onShowDocs({ name: r.name, model: r.model, maker: r.maker })}>📄</Btn>
+                  <Btn variant="primary" onClick={() => onAddRow({ name: r.name, model: r.model, maker: r.maker, vendor: e ? e.source : "", catName: "", unit: r.unit, cost: e ? e.price : "", listPrice: "", note: "ネット価格" + (e && e.source ? "（" + e.source + "）" : "") })}>＋追加</Btn>
+                </div></td>
+              </tr>); })}</tbody>
+          </table></div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ================= まとめて検索タブ（複数型番の一括照合・取込） =================
+function BulkTab({ sekisan, zairyo, settings, docs, market, state, setState, onAddRows, onShowDocs, onShowPrice }) {
+  // 状態は App が保持（タブを切り替えても貼り付けた型番・照合結果が消えない）
+  const { text, rows, srcInfo } = state;
+  const setText = (v) => setState((st) => ({ ...st, text: typeof v === "function" ? v(st.text) : v }));
+  const setRows = (v) => setState((st) => ({ ...st, rows: typeof v === "function" ? v(st.rows) : v }));
+  const setSrcInfo = (v) => setState((st) => ({ ...st, srcInfo: v }));
+  const [busy, setBusy] = useState("");
+  const pdfRef = useRef(null), imgRef = useRef(null), xlsRef = useRef(null);
+  const mkRow = (o) => ({ id: uid(), model: (o.model || "").trim(), name: (o.name || "").trim(), qty: num(o.qty) || 1, checked: true, res: undefined });
+  const termOf = (r) => (r.model || r.name || "").trim();
+
+  // --- テキストから型番を抽出して行にする ---
+  const buildFromText = (t, info) => {
+    const models = extractModels(t);
+    if (!models.length) { alert("型番らしい語が見つかりませんでした。\n（型番は英字と数字を含む語として拾います。手入力で追加もできます）"); return; }
+    setRows(models.map((m) => mkRow({ model: m })));
+    setSrcInfo(info || "");
+  };
+  const doExtract = () => buildFromText(text, "貼り付けたテキスト");
+
+  // --- Excel/CSV ---
+  const readExcel = async (file) => {
+    setBusy("Excelを読み込み中…");
+    try {
+      const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+      const picked = []; const lines = [];
+      wb.SheetNames.forEach((sn) => {
+        const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: "" });
+        let hi = -1, cModel = -1, cName = -1, cQty = -1;
+        for (let i = 0; i < Math.min(aoa.length, 12); i++) {
+          const r = (aoa[i] || []).map((v) => String(v == null ? "" : v).trim());
+          const m = r.findIndex((v) => /型番|品番|品目コード|メーカー?品番/.test(v));
+          const n = r.findIndex((v) => /品名|名称|商品名|品目|仕様/.test(v));
+          const q = r.findIndex((v) => /数量|員数|数$/.test(v));
+          if (m >= 0 || (n >= 0 && q >= 0)) { hi = i; cModel = m; cName = n; cQty = q; break; }
+        }
+        if (hi >= 0) {
+          for (let i = hi + 1; i < aoa.length; i++) {
+            const r = aoa[i] || [];
+            const model = cModel >= 0 ? String(r[cModel] == null ? "" : r[cModel]).trim() : "";
+            const name = cName >= 0 ? String(r[cName] == null ? "" : r[cName]).trim() : "";
+            const qty = cQty >= 0 ? num(r[cQty]) : 0;
+            if (!model && !name) continue;
+            picked.push({ model, name, qty });
+          }
+        } else {
+          aoa.forEach((r) => lines.push((r || []).map((v) => String(v == null ? "" : v)).join(" ")));
+        }
+      });
+      if (picked.length) {
+        setRows(picked.map(mkRow));
+        setText(picked.map((p) => [p.model, p.name, p.qty || ""].filter(Boolean).join("\t")).join("\n"));
+        setSrcInfo("Excel「" + file.name + "」の表から " + picked.length + " 行（型番・品名・数量の列を自動判別）");
+      } else {
+        const t = lines.join("\n"); setText(t); buildFromText(t, "Excel「" + file.name + "」の全セル");
+      }
+    } catch (e) { alert("Excelの読み込みに失敗しました：" + ((e && e.message) || e)); }
+    finally { setBusy(""); }
+  };
+
+  // --- PDF（まずテキスト抽出、無ければ画像として読み取り） ---
+  const readPdf = async (file) => {
+    setBusy("PDFを読み込み中…");
+    try {
+      const pdfjs = await ensurePdfLib();
+      const data = new Uint8Array(await file.arrayBuffer());
+      const pdf = await pdfjs.getDocument({ data }).promise;
+      let out = "";
+      const pages = Math.min(pdf.numPages, 20);
+      for (let p = 1; p <= pages; p++) {
+        setBusy("PDFのテキストを抽出中… (" + p + "/" + pages + "ページ)");
+        const pg = await pdf.getPage(p);
+        const tc = await pg.getTextContent();
+        out += tc.items.map((i) => i.str).join(" ") + "\n";
+      }
+      if (out.replace(/\s/g, "").length < 20) {
+        if (!confirm("このPDFは文字データを含みません（スキャン画像のPDF）。\n画像として読み取りますか？（先頭5ページ・少し時間がかかります）")) { setBusy(""); return; }
+        out = await ocrPdfPages(pdf, 5);
+      }
+      setText(out);
+      buildFromText(out, "PDF「" + file.name + "」");
+    } catch (e) { alert("PDFの読み込みに失敗しました：" + ((e && e.message) || e)); }
+    finally { setBusy(""); }
+  };
+  const ocrPdfPages = async (pdf, maxPages) => {
+    const T = await ensureTessLib();
+    let out = ""; const pages = Math.min(pdf.numPages, maxPages);
+    for (let p = 1; p <= pages; p++) {
+      setBusy("画像として読み取り中… (" + p + "/" + pages + "ページ)");
+      const pg = await pdf.getPage(p);
+      const vp = pg.getViewport({ scale: 2 });
+      const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
+      await pg.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
+      const r = await T.recognize(c, "eng");
+      out += (r.data.text || "") + "\n";
+    }
+    return out;
+  };
+
+  // --- 画像（写真・スクショ）をOCR ---
+  const readImage = async (file) => {
+    setBusy("画像を読み取り中…（初回は辞書の取得に時間がかかります）");
+    try {
+      const T = await ensureTessLib();
+      const r = await T.recognize(file, "eng", { logger: (m) => { if (m && m.status) setBusy("画像を読み取り中… " + m.status + " " + Math.round((m.progress || 0) * 100) + "%"); } });
+      const t = (r.data.text || "");
+      setText(t);
+      buildFromText(t, "画像「" + file.name + "」（OCR）");
+    } catch (e) { alert("画像の読み取りに失敗しました：" + ((e && e.message) || e)); }
+    finally { setBusy(""); }
+  };
+
+  // --- 社内データと照合 ---
+  const runMatch = () => {
+    if (!rows.length) { alert("先に型番を入れてください。"); return; }
+    setRows((rs) => rs.map((r) => ({ ...r, res: matchInternal(termOf(r), zairyo, sekisan, market) })));
+  };
+  const upd = (id, k, v) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, [k]: v, ...(k === "model" || k === "name" ? { res: undefined } : {}) } : r)));
+  const del = (id) => setRows((rs) => rs.filter((r) => r.id !== id));
+  const addBlank = () => setRows((rs) => [...rs, mkRow({})]);
+  const allChecked = rows.length > 0 && rows.every((r) => r.checked);
+  const toggleAll = () => setRows((rs) => rs.map((r) => ({ ...r, checked: !allChecked })));
+  const sel = rows.filter((r) => r.checked && termOf(r));
+  const hitCount = rows.filter((r) => r.res).length;
+  const matched = rows.some((r) => r.res !== undefined);
+
+  const addSelected = () => {
+    if (!sel.length) { alert("追加する行にチェックを入れてください。"); return; }
+    const items = sel.map((r) => {
+      const h = r.res;
+      return h
+        ? { name: h.name, model: h.model || r.model, maker: h.maker, vendor: h.vendor, catName: h.cat, unit: h.unit, cost: h.price || "", listPrice: h.listPrice, qty: r.qty, note: h.src === "ネット価格" ? ("ネット価格" + (h.vendor ? "（" + h.vendor + "）" : "")) : (h.via === "OCR補正一致" ? "OCR補正で照合" : "") }
+        : { name: r.name || "", model: r.model, maker: "", vendor: "", catName: "", unit: "", cost: "", listPrice: "", qty: r.qty, note: "社内データに無し（要調査）" };
+    });
+    onAddRows(items);
+  };
+  const inp = "w-full border border-slate-300 rounded px-1.5 py-1 text-sm";
+
+  return (
+    <div className="space-y-3">
+      <Card title="① 型番を入れる（貼り付け／PDF・画像・Excelから取り込み）">
+        <div className="flex gap-1.5 flex-wrap mb-2">
+          <Btn variant="primary" onClick={() => xlsRef.current.click()} disabled={!!busy}>📗 Excel・CSVを取込</Btn>
+          <Btn variant="primary" onClick={() => pdfRef.current.click()} disabled={!!busy}>📄 PDFを取込</Btn>
+          <Btn variant="primary" onClick={() => imgRef.current.click()} disabled={!!busy}>🖼 画像を取込（OCR）</Btn>
+          <input ref={xlsRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={(e) => { if (e.target.files[0]) readExcel(e.target.files[0]); e.target.value = ""; }} />
+          <input ref={pdfRef} type="file" accept=".pdf" className="hidden" onChange={(e) => { if (e.target.files[0]) readPdf(e.target.files[0]); e.target.value = ""; }} />
+          <input ref={imgRef} type="file" accept="image/*" className="hidden" onChange={(e) => { if (e.target.files[0]) readImage(e.target.files[0]); e.target.value = ""; }} />
+          {busy && <span className="text-sm text-cyan-700 self-center">⏳ {busy}</span>}
+        </div>
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={5}
+          placeholder={"型番をそのまま貼り付け（1行1件／カンマ・スペース区切りも可）\n例：\nOL251359RS\nGP-16  VVF1.6-2C\nXLX450NENZ9"}
+          className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm font-mono" />
+        <div className="flex gap-1.5 flex-wrap mt-2 items-center">
+          <Btn variant="primary" onClick={doExtract} disabled={!!busy}>🔎 型番を抽出</Btn>
+          {text && <Btn variant="ghost" onClick={() => { setText(""); setRows([]); setSrcInfo(""); }}>✕ クリア</Btn>}
+          {srcInfo && <span className="text-xs text-slate-500">取込元：{srcInfo}</span>}
+        </div>
+        <div className="text-xs text-slate-400 mt-1.5">型番＝英字と数字を両方含む語として拾います（日本語の品名・金額・日付は除外）。Excelは「型番／品名／数量」の列があればそのまま読み取ります。画像とスキャンPDFのOCRは英数字のみ対応です。</div>
+      </Card>
+
+      {rows.length > 0 && (
+        <Card title={"② 照合と取込（" + rows.length + "件）"} right={<>
+          <Btn variant="primary" onClick={runMatch}>🔗 社内データと照合</Btn>
+          <Btn onClick={addBlank}>＋ 行追加</Btn>
+        </>}>
+          {matched && <div className="text-sm mb-2">社内ヒット <b className="text-cyan-800">{hitCount}</b> 件 ／ 未ヒット <b className={rows.length - hitCount ? "text-rose-600" : ""}>{rows.length - hitCount}</b> 件</div>}
+          <div className="overflow-x-auto">
+            <table className="tbl text-sm w-full whitespace-nowrap" style={{ minWidth: 1000 }}>
+              <thead><tr>
+                <th style={{ width: 34 }}><input type="checkbox" checked={allChecked} onChange={toggleAll} title="全選択/全解除" /></th>
+                <th style={{ width: 150 }}>型番</th><th style={{ width: 150 }}>品名（任意）</th><th style={{ width: 60 }}>数量</th>
+                <th style={{ width: 88 }}>照合</th><th>社内の品名</th><th style={{ width: 88 }}>単価</th><th style={{ width: 96 }}>仕入先/出典</th><th style={{ width: 140 }}>操作</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id} className={r.res === undefined ? "" : (r.res ? "bg-emerald-50/50" : "bg-rose-50/40")}>
+                    <td className="text-center"><input type="checkbox" checked={r.checked} onChange={(e) => upd(r.id, "checked", e.target.checked)} /></td>
+                    <td><input value={r.model} onChange={(e) => upd(r.id, "model", e.target.value)} className={inp + " font-mono"} /></td>
+                    <td><input value={r.name} onChange={(e) => upd(r.id, "name", e.target.value)} className={inp} /></td>
+                    <td><input type="number" value={r.qty} onChange={(e) => upd(r.id, "qty", e.target.value)} className={inp + " text-right"} /></td>
+                    <td className="text-center text-xs">{r.res === undefined ? <span className="text-slate-400">未照合</span> : (r.res ? <span className={r.res.via === "型番一致" ? "text-emerald-700 font-semibold" : (r.res.src === "ネット価格" ? "text-sky-700 font-semibold" : "text-amber-700")}>{r.res.via}</span> : <span className="text-rose-600">未ヒット</span>)}</td>
+                    <td className="max-w-[24rem] truncate" title={r.res ? r.res.name : ""}>{r.res ? <>{r.res.name}<span className="text-xs text-slate-400 ml-1">［{r.res.src}］</span>{r.res.more > 0 ? <span className="text-xs text-slate-400">他{r.res.more}件</span> : null}</> : ""}</td>
+                    <td className="text-right font-semibold text-cyan-800">{r.res ? yen(r.res.price) : ""}</td>
+                    <td className="max-w-[8rem] truncate" title={r.res ? r.res.vendor : ""}>{r.res ? r.res.vendor : ""}</td>
+                    <td className="text-center"><div className="flex gap-1 justify-center">
+                      <Btn variant="ghost" title="カタログ・仕様書・姿図をさがす" onClick={() => onShowDocs({ name: r.res ? r.res.name : r.name, model: r.model, maker: r.res ? r.res.maker : "" })}>📄</Btn>
+                      <Btn variant="ghost" title="ネット価格を調べて保存・この行に反映" onClick={() => onShowPrice({ name: r.res ? r.res.name : r.name, model: r.model, maker: r.res ? r.res.maker : "", unit: r.res ? r.res.unit : "" }, (entry, rec) => setRows((rs) => rs.map((x) => x.id === r.id ? { ...x, res: { via: "ネット価格", src: "ネット価格", name: (rec && rec.name) || x.name || "", model: x.model, maker: (rec && rec.maker) || "", vendor: entry.source || "ネット", cat: "", unit: (rec && rec.unit) || "", price: num(entry.price), listPrice: "", date: entry.savedAt, more: 0, url: entry.url || "" } } : x)))}>💹</Btn>
+                      <Btn variant="ghost" title="ネットで検索" onClick={() => { const t = termOf(r); if (t) window.open("https://www.google.com/search?q=" + encodeURIComponent(t), "_blank"); }}>🌐</Btn>
+                      <Btn variant="ghost" title="削除" onClick={() => del(r.id)}>🗑</Btn>
+                    </div></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap mt-2">
+            <div className="text-xs text-slate-400">未ヒットの行は「💹」でネットで調べた価格を登録すると、この行に反映され次回からは自動で当たります。そのまま追加した場合は備考に「社内データに無し」と入ります。</div>
+            <Btn variant="primary" className="ml-auto" onClick={addSelected} disabled={!sel.length}>📥 選択した{sel.length}件を案件に追加</Btn>
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
+
+// ================= 案件（簡易集計）タブ =================
+function CaseTab({ cur, setCur, settings, setSettings, vendorList, docs, market, onShowDocs, onShowPrice, onSaveCase, onNewCase, onPreview, onExportExcel, onExportMitsumori, savedMsg }) {
+  const upd = (patch) => setCur((c) => ({ ...c, ...patch, updatedAt: new Date().toISOString() }));
+  const updDest = (k, v) => upd({ dest: { ...cur.dest, [k]: v } });
+  const updRow = (id, k, v) => upd({
+    rows: cur.rows.map((r) => {
+      if (r.id !== id) return r;
+      const nr = { ...r, [k]: v };
+      if (k === "bid") { nr.bidManual = true; }
+      if ((k === "cost" || k === "markup") && !nr.bidManual) { nr.bid = Math.round(num(k === "cost" ? v : nr.cost) * (num(k === "markup" ? v : nr.markup) || 1)) || ""; }
+      return nr;
+    })
+  });
+  // ネット価格モーダルで「この価格を行に反映」→ 仕入単価・仕入先(出典)・備考を更新（売単価は手入力でなければ再計算）
+  const applyPrice = (id, entry) => upd({
+    rows: cur.rows.map((r) => {
+      if (r.id !== id) return r;
+      const cost = num(entry.price);
+      const tag = "ネット価格" + (entry.source ? "（" + entry.source + "）" : "");
+      const note = (r.note || "").includes("ネット価格") ? r.note : [r.note, tag].filter(Boolean).join(" / ");
+      const nr = { ...r, cost, vendor: entry.source || r.vendor, note };
+      if (!nr.bidManual) nr.bid = Math.round(cost * (num(nr.markup) || 1)) || "";
+      return nr;
+    })
+  });
+  const delRow = (id) => upd({ rows: cur.rows.filter((r) => r.id !== id) });
+  const moveRow = (id, dir) => {
+    const i = cur.rows.findIndex((r) => r.id === id); const j = i + dir;
+    if (i < 0 || j < 0 || j >= cur.rows.length) return;
+    const rows = cur.rows.slice(); const t = rows[i]; rows[i] = rows[j]; rows[j] = t; upd({ rows });
+  };
+  const addBlank = () => upd({ rows: [...cur.rows, blankRow(settings.defaultMarkup)] });
+  const sums = useMemo(() => {
+    const rows = cur.rows || [];
+    const cost = rows.reduce((s, r) => s + Math.round(num(r.qty) * num(r.cost)), 0);
+    const sell = rows.reduce((s, r) => s + Math.round(num(r.qty) * rowBid(r)), 0);
+    const tax = Math.round(sell * (num(settings.taxRate) / 100));
+    return { cost, sell, profit: sell - cost, tax, total: sell + tax };
+  }, [cur.rows, settings.taxRate]);
+  const inp = "w-full border border-slate-300 rounded px-1.5 py-1 text-sm";
+  return (
+    <div className="space-y-3">
+      <Card title="📋 案件情報" right={<>
+        {savedMsg && <span className="text-xs text-emerald-600 self-center mr-1">{savedMsg}</span>}
+        <Btn variant="primary" onClick={onSaveCase}>💾 案件を保存</Btn>
+        <Btn onClick={onNewCase}>🆕 新規案件</Btn>
+      </>}>
+        <div className="grid sm:grid-cols-2 gap-2">
+          <label className="text-sm"><span className="text-slate-500 text-xs">案件名（保存名・依頼書の件名になります）</span>
+            <input value={cur.name} onChange={(e) => upd({ name: e.target.value })} placeholder="例：〇〇工事 器具調べ" className={inp} /></label>
+          <label className="text-sm"><span className="text-slate-500 text-xs">メモ</span>
+            <input value={cur.memo} onChange={(e) => upd({ memo: e.target.value })} placeholder="調査メモ（任意）" className={inp} /></label>
+        </div>
+      </Card>
+
+      <Card title={"明細（" + cur.rows.length + "行）"} right={<Btn variant="primary" onClick={addBlank}>＋ 行追加</Btn>}>
+        <div className="overflow-x-auto">
+          <table className="tbl text-sm w-full whitespace-nowrap" style={{ minWidth: 980 }}>
+            <thead><tr>
+              <th style={{ width: 30 }}>No</th><th style={{ minWidth: 180 }}>品名</th><th style={{ width: 130 }}>型番</th><th style={{ width: 90 }}>メーカ</th>
+              <th style={{ width: 110 }}>仕入先</th><th style={{ width: 52 }}>単位</th><th style={{ width: 64 }}>数量</th>
+              <th style={{ width: 84 }}>仕入単価</th><th style={{ width: 56 }}>掛率</th><th style={{ width: 84 }}>売単価</th><th style={{ width: 90 }}>金額(売)</th>
+              <th style={{ width: 110 }}>備考</th><th style={{ width: 156 }}>操作</th>
+            </tr></thead>
+            <tbody>
+              {cur.rows.map((r, i) => (
+                <tr key={r.id}>
+                  <td className="text-center text-slate-500">{i + 1}</td>
+                  <td><input value={r.name} onChange={(e) => updRow(r.id, "name", e.target.value)} className={inp} /></td>
+                  <td><input value={r.model} onChange={(e) => updRow(r.id, "model", e.target.value)} className={inp + " font-mono"} /></td>
+                  <td><input value={r.maker} onChange={(e) => updRow(r.id, "maker", e.target.value)} className={inp} /></td>
+                  <td><input value={r.vendor} onChange={(e) => updRow(r.id, "vendor", e.target.value)} list="vendorList" className={inp} /></td>
+                  <td><input value={r.unit} onChange={(e) => updRow(r.id, "unit", e.target.value)} list="unitList" className={inp + " text-center"} /></td>
+                  <td><input type="number" value={r.qty} onChange={(e) => updRow(r.id, "qty", e.target.value)} className={inp + " text-right"} /></td>
+                  <td><input type="number" value={r.cost} onChange={(e) => updRow(r.id, "cost", e.target.value)} className={inp + " text-right"} /></td>
+                  <td><input type="number" step="0.05" value={r.markup} onChange={(e) => updRow(r.id, "markup", e.target.value)} className={inp + " text-right"} /></td>
+                  <td><input type="number" value={r.bidManual ? r.bid : rowBid(r) || ""} onChange={(e) => updRow(r.id, "bid", e.target.value)} className={inp + " text-right " + (r.bidManual ? "bg-amber-50" : "")} title={r.bidManual ? "手入力値（固定）" : "自動＝仕入×掛率"} /></td>
+                  <td className="text-right font-semibold">{yen(num(r.qty) * rowBid(r))}</td>
+                  <td><input value={r.note} onChange={(e) => updRow(r.id, "note", e.target.value)} className={inp} /></td>
+                  <td className="text-center">
+                    <div className="flex gap-0.5 justify-center">
+                      <Btn variant="ghost" onClick={() => onShowDocs({ name: r.name, model: r.model, maker: r.maker })} title="カタログ・仕様書・姿図をさがす">📄{((docs && docs[docKeyOf(r)]) || []).length ? <span className="text-amber-600">{((docs && docs[docKeyOf(r)]) || []).length}</span> : null}</Btn>
+                      <Btn variant="ghost" onClick={() => onShowPrice({ name: r.name, model: r.model, maker: r.maker, unit: r.unit }, (entry) => applyPrice(r.id, entry))} title="ネット価格を調べて保存・この行に反映">💹{marketAdopted(market && market[docKeyOf(r)]) ? <span className="text-sky-600">●</span> : null}</Btn>
+                      <Btn variant="ghost" onClick={() => moveRow(r.id, -1)} title="上へ">▲</Btn>
+                      <Btn variant="ghost" onClick={() => moveRow(r.id, 1)} title="下へ">▼</Btn>
+                      <Btn variant="ghost" onClick={() => { if (confirm("この行を削除しますか？")) delRow(r.id); }} title="削除">🗑</Btn>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!cur.rows.length && <tr><td colSpan={13} className="text-center text-slate-400 py-4">検索タブの「＋追加」か「＋行追加」で明細を追加してください</td></tr>}
+            </tbody>
+          </table>
+        </div>
+        <datalist id="vendorList">{vendorList.map((v, i) => <option key={i} value={v} />)}</datalist>
+        <datalist id="unitList">{["式", "台", "個", "m", "本", "袋", "組", "ヶ所"].map((u) => <option key={u} value={u} />)}</datalist>
+        <div className="flex flex-wrap gap-x-6 gap-y-1 justify-end mt-3 text-sm">
+          <div>仕入計：<b>{yen(sums.cost)}</b> 円</div>
+          <div>売計（税抜）：<b className="text-cyan-800">{yen(sums.sell)}</b> 円</div>
+          <div>粗利：<b className={sums.profit >= 0 ? "text-emerald-700" : "text-rose-600"}>{yen(sums.profit)}</b> 円</div>
+          <div>消費税（{settings.taxRate}%）：<b>{yen(sums.tax)}</b> 円</div>
+          <div className="text-base">税込合計：<b className="text-cyan-800">{yen(sums.total)}</b> 円</div>
+        </div>
+      </Card>
+
+      <Card title="📨 見積依頼書（仕入先へ渡す）">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-2">
+          <label className="text-sm"><span className="text-slate-500 text-xs">宛先（仕入先名）</span>
+            <input value={cur.dest.vendor} onChange={(e) => updDest("vendor", e.target.value)} list="vendorList" placeholder="例：ニシムラ株式会社" className={inp} /></label>
+          <label className="text-sm"><span className="text-slate-500 text-xs">納期</span>
+            <input value={cur.dest.due} onChange={(e) => updDest("due", e.target.value)} placeholder="例：10月末 / 打合せの上" className={inp} /></label>
+          <label className="text-sm"><span className="text-slate-500 text-xs">受渡場所</span>
+            <input value={cur.dest.place} onChange={(e) => updDest("place", e.target.value)} placeholder="例：弊社倉庫 / 現場" className={inp} /></label>
+          <label className="text-sm"><span className="text-slate-500 text-xs">備考</span>
+            <input value={cur.dest.note} onChange={(e) => updDest("note", e.target.value)} className={inp} /></label>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <label className="text-sm flex items-center gap-1.5">
+            <input type="checkbox" checked={!!settings.priceOnSheet} onChange={(e) => setSettings((s) => ({ ...s, priceOnSheet: e.target.checked }))} />
+            参考単価（仕入単価）を載せる<span className="text-xs text-slate-400">※通常はOFF＝単価・金額欄は先方記入用の空欄</span>
+          </label>
+          <div className="ml-auto flex gap-1.5 flex-wrap">
+            <Btn onClick={onPreview}>🖨 プレビュー・印刷</Btn>
+            <Btn variant="primary" onClick={onExportExcel}>📗 Excel出力</Btn>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="🔗 見積ソフトへ渡す">
+        <div className="flex items-center gap-3 flex-wrap">
+          <div className="text-sm text-slate-600">この案件の明細を、見積ソフト（民間・公共工事）で読み込めるJSONファイルにします。<br />
+            <span className="text-xs text-slate-400">見積ソフトの 一時保存メニュー「ファイルから読込」または開始画面の個別取込で読み込んでください（品名・数量・仕入単価・掛率・売単価が明細行になります）。</span></div>
+          <Btn variant="primary" className="ml-auto" onClick={onExportMitsumori} disabled={!cur.rows.some((r) => (r.name || "").trim())}>📤 見積ソフト用JSONを書き出し</Btn>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ================= 案件一覧タブ =================
+function ListTab({ cases, onOpen, onDup, onDel }) {
+  const [q2, setQ2] = useState("");
+  const toks = tokens(q2);
+  const list = useMemo(() => {
+    let l = cases.slice().sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+    if (toks.length) l = l.filter((c) => hitAll(norm([c.name, c.memo, c.dest && c.dest.vendor, (c.rows || []).map((r) => r.name + r.model).join("")].join("␟")), toks));
+    return l;
+  }, [cases, q2]);
+  const sellOf = (c) => (c.rows || []).reduce((s, r) => s + Math.round(num(r.qty) * rowBid(r)), 0);
+  return (
+    <Card title={"🗂 保存した案件（" + cases.length + "件）"}>
+      <input value={q2} onChange={(e) => setQ2(e.target.value)} placeholder="案件名・メモ・仕入先・品名で検索" className="w-full sm:w-96 border border-slate-300 rounded px-2 py-1.5 text-sm mb-2" />
+      <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
+        <thead><tr><th>案件名</th><th>宛先</th><th>行数</th><th>売計(税抜)</th><th>更新日時</th><th>メモ</th><th>操作</th></tr></thead>
+        <tbody>
+          {list.map((c) => (
+            <tr key={c.id} className="hover:bg-cyan-50">
+              <td className="font-semibold max-w-[18rem] truncate" title={c.name}>{c.name || "（無題）"}</td>
+              <td className="max-w-[10rem] truncate">{(c.dest && c.dest.vendor) || ""}</td>
+              <td className="text-center">{(c.rows || []).length}</td>
+              <td className="text-right">{yen(sellOf(c))}</td>
+              <td>{c.updatedAt ? new Date(c.updatedAt).toLocaleString("ja-JP") : ""}</td>
+              <td className="max-w-[14rem] truncate" title={c.memo}>{c.memo}</td>
+              <td><div className="flex gap-1">
+                <Btn variant="primary" onClick={() => onOpen(c)}>開く</Btn>
+                <Btn onClick={() => onDup(c)}>複製</Btn>
+                <Btn variant="danger" onClick={() => { if (confirm("「" + (c.name || "無題") + "」を削除しますか？")) onDel(c.id); }}>削除</Btn>
+              </div></td>
+            </tr>
+          ))}
+          {!list.length && <tr><td colSpan={7} className="text-center text-slate-400 py-4">保存された案件はありません</td></tr>}
+        </tbody>
+      </table></div>
+    </Card>
+  );
+}
+
+// ================= 設定タブ =================
+function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onReloadSekisan, onImportZairyo, onExportAll, onImportAll, fs, lastBackup, gens, onSetupFs, onEnableFs, onFsWriteNow, onRestoreHandle, onRestorePicker, onRecoverGens }) {
+  const upC = (k, v) => setSettings((s) => ({ ...s, company: { ...s.company, [k]: v } }));
+  const upLink = (i, k, v) => setSettings((s) => { const links = s.links.slice(); links[i] = { ...links[i], [k]: v }; return { ...s, links }; });
+  const upPat = (i, k, v) => setSettings((s) => { const ps = (s.urlPatterns || []).slice(); ps[i] = { ...ps[i], [k]: v }; return { ...s, urlPatterns: ps }; });
+  const inp = "w-full border border-slate-300 rounded px-2 py-1 text-sm";
+  const fileRef = useRef(null); const bakRef = useRef(null);
+  return (
+    <div className="space-y-3">
+      <Card title="📡 データの状態">
+        <div className="grid lg:grid-cols-2 gap-3">
+          <div className="border border-slate-200 rounded p-2.5">
+            <div className="font-semibold text-sm mb-1">見積ソフトの歩掛りマスタ（読み取り専用の直読）</div>
+            {sekisan.ok
+              ? (sekisan.snap
+                ? <div className="text-sm text-emerald-700">📱 スナップショット {sekisan.master.length.toLocaleString()} 件を使用中 <span className="text-xs text-slate-400">（PCの見積ソフト {sekisan.at || (sekisan.ts ? new Date(sekisan.ts).toLocaleString("ja-JP") : "")} 時点。PCのバックアップを復元すると更新されます）</span></div>
+                : <div className="text-sm text-emerald-700">✅ {sekisan.master.length.toLocaleString()} 件を読込中{sekisan.ts ? <span className="text-xs text-slate-400">（見積ソフト最終保存: {new Date(sekisan.ts).toLocaleString("ja-JP")}）</span> : null}</div>)
+              : <div className="text-sm text-rose-600">⚠ 読み込めません：{sekisan.reason}<div className="text-xs text-slate-500 mt-0.5">スマホ・別PCの場合は、PCで書き出したバックアップを「バックアップから復元」すると見積マスタも入ります。</div></div>}
+            <div className="text-xs text-slate-400 mt-1">このソフトは見積ソフトのデータを読むだけで、一切書き込みません。マスタを更新した後は「再読込」してください。</div>
+            <div className="mt-1.5"><Btn onClick={onReloadSekisan}>🔄 再読込</Btn></div>
+          </div>
+          <div className="border border-slate-200 rounded p-2.5">
+            <div className="font-semibold text-sm mb-1">材料マスタ.xlsx（仕入実績・単価履歴・定価・仕入先）</div>
+            {zairyo.items && zairyo.items.length
+              ? <div className="text-sm text-emerald-700">✅ {zairyo.items.length} 品目・履歴 {(zairyo.history || []).length} 行 <span className="text-xs text-slate-400">（取込: {zairyo.importedAt}{zairyo.fileName ? " / " + zairyo.fileName : ""}）</span></div>
+              : <div className="text-sm text-amber-600">未取込です。「取込」で 積算ソフト\材料データ\材料マスタ.xlsx を選んでください。</div>}
+            <div className="text-xs text-slate-400 mt-1">材料マスタ.xlsxが月次更新されたら、ここで再取込してください（丸ごと置き換え・元のxlsxは変更しません）。</div>
+            <div className="mt-1.5">
+              <Btn variant="primary" onClick={() => fileRef.current && fileRef.current.click()}>📥 材料マスタ.xlsxを取込</Btn>
+              <input ref={fileRef} type="file" accept=".xlsx" className="hidden" onChange={(e) => { if (e.target.files[0]) onImportZairyo(e.target.files[0]); e.target.value = ""; }} />
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="📱 スマホ・タブレットで使う（写真管理アプリと同方式）">
+        <div className="text-sm">
+          <div className="mb-1">公開URL（スマホのブラウザで開き「ホーム画面に追加」）：</div>
+          <div className="flex gap-1.5 items-center flex-wrap mb-2">
+            <a href={PUBLIC_URL} target="_blank" rel="noopener" className="font-mono text-cyan-700 underline break-all">{PUBLIC_URL}</a>
+            <Btn onClick={() => { try { navigator.clipboard.writeText(PUBLIC_URL); alert("URLをコピーしました"); } catch (e) { prompt("URL", PUBLIC_URL); } }}>📋 コピー</Btn>
+          </div>
+          <div className="text-xs text-slate-600 space-y-0.5">
+            <div>現在の実行環境：{(typeof location !== "undefined" && location.protocol === "https:") ? "🌐 公開版（スマホ・どこからでも）" : "💻 PC版（file://・見積ソフト直読あり）"}</div>
+            <div><b>データの受け渡し</b>（端末ごとに保存されるため、バックアップJSONで手動同期＝写真管理アプリと同じ）：</div>
+            <div>① PC：自動バックアップの保存先をGoogleドライブ内にしておく（または「全データを書き出し」でJSONをドライブへ）</div>
+            <div>② スマホ：公開URLを開く → 設定 → 「バックアップから復元」 → ドライブのJSONを選ぶ（見積マスタのスナップショットも一緒に入ります）</div>
+            <div>③ スマホで調べたネット価格などをPCに戻すときは、スマホで「全データを書き出し」→ PCで「バックアップから復元」</div>
+            <div className="text-amber-700">※復元は全置き換え（後から復元した側の内容になります）。両方で編集した場合はどちらかを先に書き出してください。</div>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="💹 ネット価格DB（調べて保存した市場価格）">
+        {(() => {
+          const keys = Object.keys(market || {});
+          const total = keys.reduce((n, k) => n + ((market[k].entries) || []).length, 0);
+          return keys.length
+            ? <div className="text-sm text-emerald-700">✅ {keys.length} 品目・{total} 件の価格を登録済み <span className="text-xs text-slate-400">（検索・まとめて検索の照合で、社内に無い型番に自動で当たります）</span></div>
+            : <div className="text-sm text-slate-500">まだ登録がありません。検索結果や「まとめて検索」の未ヒット行の「💹」から、ネットで調べた価格を保存できます。</div>;
+        })()}
+        <div className="text-xs text-slate-400 mt-1">仕入実績・見積マスタが優先され、無いときだけネット価格が使われます。登録内容はバックアップに含まれます。</div>
+      </Card>
+
+      <Card title="📎 登録した資料（カタログ・仕様書・姿図）">
+        {(() => {
+          const keys = Object.keys(docs || {});
+          const total = keys.reduce((n, k) => n + (docs[k] || []).length, 0);
+          return keys.length
+            ? <div className="text-sm text-emerald-700">✅ {keys.length} 品目に {total} 件の資料を登録済み <span className="text-xs text-slate-400">（検索結果の「📄資料」ボタンから開けます）</span></div>
+            : <div className="text-sm text-slate-500">まだ登録がありません。検索結果の「📄資料」ボタンからカタログ・仕様書・姿図を探し、見つけたURLや保存先を登録できます。</div>;
+        })()}
+        <div className="text-xs text-slate-400 mt-1">登録内容はバックアップ（自動保存・手動書き出し）に含まれます。</div>
+      </Card>
+
+      <Card title="🏢 会社情報（見積依頼書に印字）">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-2">
+          <label className="text-sm"><span className="text-xs text-slate-500">会社名</span><input value={settings.company.name || ""} onChange={(e) => upC("name", e.target.value)} className={inp} /></label>
+          <label className="text-sm lg:col-span-2"><span className="text-xs text-slate-500">住所</span><input value={settings.company.address || ""} onChange={(e) => upC("address", e.target.value)} className={inp} /></label>
+          <label className="text-sm"><span className="text-xs text-slate-500">TEL</span><input value={settings.company.tel || ""} onChange={(e) => upC("tel", e.target.value)} className={inp} /></label>
+          <label className="text-sm"><span className="text-xs text-slate-500">FAX</span><input value={settings.company.fax || ""} onChange={(e) => upC("fax", e.target.value)} className={inp} /></label>
+          <label className="text-sm"><span className="text-xs text-slate-500">登録番号（インボイス）</span><input value={settings.company.invoice || ""} onChange={(e) => upC("invoice", e.target.value)} className={inp} /></label>
+          <label className="text-sm"><span className="text-xs text-slate-500">担当者</span><input value={settings.company.rep || ""} onChange={(e) => upC("rep", e.target.value)} className={inp} /></label>
+        </div>
+        <div className="text-xs text-slate-400 mt-1">初回は見積ソフトの会社情報から自動で写しています。ここでの編集はこのソフトだけに保存されます。</div>
+      </Card>
+
+      <Card title="🧮 計算の既定値">
+        <div className="flex gap-4 flex-wrap">
+          <label className="text-sm">消費税率（%）<input type="number" value={settings.taxRate} onChange={(e) => setSettings((s) => ({ ...s, taxRate: e.target.value }))} className="w-20 border border-slate-300 rounded px-2 py-1 text-sm ml-1.5 text-right" /></label>
+          <label className="text-sm">既定の掛率<input type="number" step="0.05" value={settings.defaultMarkup} onChange={(e) => setSettings((s) => ({ ...s, defaultMarkup: e.target.value }))} className="w-20 border border-slate-300 rounded px-2 py-1 text-sm ml-1.5 text-right" /></label>
+        </div>
+      </Card>
+
+      <Card title="🎯 メーカー直リンク（URLパターン）" right={<Btn onClick={() => setSettings((s) => ({ ...s, urlPatterns: [...(s.urlPatterns || []), { id: "p" + Date.now().toString(36), name: "", maker: "", url: "", note: "" }] }))}>＋ 追加</Btn>}>
+        <div className="text-xs text-slate-500 mb-1.5">
+          資料の実URLを貼り、品番の部分を <b>{"{modelU}"}</b> に置き換えて登録すると、以後その形で品番ごとに直接ひらけます（<b>{"{modelU}"}</b>＝スペースを除いた大文字の品番。例「XFX450DHN LE9」→「XFX450DHNLE9」）。メーカー欄を空にすると全メーカーで表示します。
+        </div>
+        <div className="space-y-1">
+          {(settings.urlPatterns || []).map((p, i) => (
+            <div key={p.id || i} className="flex gap-1.5 items-center flex-wrap">
+              <input value={p.name || ""} onChange={(e) => upPat(i, "name", e.target.value)} placeholder="表示名（例: 姿図）" className="w-44 border border-slate-300 rounded px-2 py-1 text-sm" />
+              <input value={p.maker || ""} onChange={(e) => upPat(i, "maker", e.target.value)} placeholder="メーカー（空=全部）" className="w-36 border border-slate-300 rounded px-2 py-1 text-sm" />
+              <input value={p.url || ""} onChange={(e) => upPat(i, "url", e.target.value)} placeholder="https://….../{modelU}.pdf" className="flex-1 min-w-[260px] border border-slate-300 rounded px-2 py-1 text-sm font-mono" />
+              <Btn variant="ghost" onClick={() => setSettings((s) => ({ ...s, urlPatterns: s.urlPatterns.filter((_, j) => j !== i) }))}>✕</Btn>
+            </div>
+          ))}
+        </div>
+        <div className="mt-1.5"><Btn onClick={() => { if (confirm("直リンクのパターンを既定（パナソニック照明）に戻しますか？")) setSettings((s) => ({ ...s, urlPatterns: DEFAULT_URL_PATTERNS })); }}>既定に戻す</Btn></div>
+      </Card>
+
+      <Card title="🌐 ネット検索リンク" right={<Btn onClick={() => setSettings((s) => ({ ...s, links: [...s.links, { name: "", url: "https://…{q}…" }] }))}>＋ 追加</Btn>}>
+        <div className="text-xs text-slate-400 mb-1.5">URLの {"{q}"} が検索語に置き換わります。</div>
+        <div className="space-y-1">
+          {(settings.links || []).map((l, i) => (
+            <div key={i} className="flex gap-1.5 items-center">
+              <input value={l.name} onChange={(e) => upLink(i, "name", e.target.value)} placeholder="表示名" className="w-40 border border-slate-300 rounded px-2 py-1 text-sm" />
+              <input value={l.url} onChange={(e) => upLink(i, "url", e.target.value)} placeholder="https://…{q}…" className="flex-1 border border-slate-300 rounded px-2 py-1 text-sm font-mono" />
+              <Btn variant="ghost" onClick={() => setSettings((s) => ({ ...s, links: s.links.filter((_, j) => j !== i) }))}>✕</Btn>
+            </div>
+          ))}
+        </div>
+        <div className="mt-1.5"><Btn onClick={() => { if (confirm("リンクを既定に戻しますか？")) setSettings((s) => ({ ...s, links: DEFAULT_LINKS })); }}>既定に戻す</Btn></div>
+      </Card>
+
+      <Card title="🗄 バックアップ・復元（見積ソフトと同方式）">
+        {fs.supported ? (
+          <div className="border border-slate-200 rounded p-2.5 mb-2">
+            <div className="font-semibold text-sm mb-1">自動バックアップ（ファイルへ自動保存）</div>
+            {fs.name
+              ? (fs.ready
+                ? <div className="text-sm text-emerald-700">✅ 有効：{fs.name}{fs.lastWrite ? <span className="text-xs text-slate-400">（最終書込 {new Date(fs.lastWrite).toLocaleString("ja-JP")}）</span> : null}</div>
+                : <div className="text-sm text-amber-600">⚠ 権限が切れています：{fs.name} — 「再有効化」を押してください</div>)
+              : <div className="text-sm text-amber-600">未設定です。保存先ファイルを一度設定すると、以後データ変更のたびに自動で書き出します。</div>}
+            <div className="flex gap-1.5 flex-wrap mt-1.5">
+              <Btn variant="primary" onClick={onSetupFs}>📂 保存先を{fs.name ? "変更" : "設定"}</Btn>
+              {fs.name && !fs.ready && <Btn variant="primary" onClick={onEnableFs}>🔓 再有効化</Btn>}
+              {fs.name && <Btn onClick={onFsWriteNow} disabled={!fs.ready}>💾 今すぐ書き出し</Btn>}
+              {fs.name && <Btn onClick={onRestoreHandle}>♻ 保存先から復元</Btn>}
+              <Btn onClick={onRestorePicker}>📄 ファイルを選んで復元</Btn>
+            </div>
+            <div className="text-xs text-slate-400 mt-1">保存先をGoogleドライブ内のフォルダにすると遠隔バックアップになります。起動時に保存先の方が新しければ自動で復元します（新しいローカル編集は巻き戻しません）。空データでの上書きは自動で防ぎます。</div>
+          </div>
+        ) : <div className="text-xs text-amber-600 mb-2">このブラウザは自動保存（実ファイル書き出し）非対応です。下の手動バックアップをご利用ください。</div>}
+        <div className="border border-slate-200 rounded p-2.5 mb-2">
+          <div className="font-semibold text-sm mb-1">手動バックアップ</div>
+          <div className="flex gap-1.5 flex-wrap">
+            <Btn onClick={onExportAll}>💾 全データを書き出し（JSON）</Btn>
+            <Btn onClick={() => bakRef.current && bakRef.current.click()}>📂 バックアップから復元</Btn>
+            <input ref={bakRef} type="file" accept=".json" className="hidden" onChange={(e) => { if (e.target.files[0]) onImportAll(e.target.files[0]); e.target.value = ""; }} />
+            {lastBackup ? <span className="text-xs text-slate-400 self-center">最終書き出し：{new Date(lastBackup).toLocaleString("ja-JP")}</span> : null}
+          </div>
+          <div className="text-xs text-slate-400 mt-1">案件・設定・取込済み材料マスタを1つのJSONに書き出します（自動保存と同じ内容）。</div>
+        </div>
+        <div className="border border-slate-200 rounded p-2.5">
+          <div className="font-semibold text-sm mb-1">世代バックアップ（このブラウザ内・自動）</div>
+          <div className="text-xs text-slate-400 mb-1">案件一覧を保存のたびに日時付きで最大10世代保持します（件数が急減する変化は追記せず古い世代を保護）。起動時に失われた案件を自動で復旧します。</div>
+          {gens.length
+            ? <div className="text-sm text-slate-600">保持中：{gens.length} 世代（最新 {gens[0].at}・{gens[0].count}件）</div>
+            : <div className="text-sm text-slate-400">まだ世代はありません（案件を保存すると作られます）</div>}
+          <div className="mt-1.5"><Btn onClick={onRecoverGens} disabled={!gens.length}>♻ 世代から失われた案件を復旧</Btn></div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ================= 履歴モーダル =================
+function HistModal({ item, history, onClose }) {
+  const key = norm(item.model || "");
+  const rows = (history || []).filter((h) => key ? norm(h.model) === key : norm(h.name) === norm(item.name)).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
+      <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[80vh] overflow-auto p-4" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center mb-2">
+          <div className="font-semibold">📈 仕入履歴：{item.name} <span className="font-mono text-sm text-slate-500">{item.model}</span></div>
+          <Btn variant="ghost" className="ml-auto" onClick={onClose}>✕ 閉じる</Btn>
+        </div>
+        {rows.length ? (
+          <table className="tbl text-sm w-full whitespace-nowrap">
+            <thead><tr><th>仕入日</th><th>仕入先</th><th>数量</th><th>単位</th><th>単価</th><th>金額</th><th>現場</th></tr></thead>
+            <tbody>{rows.map((h, i) => (
+              <tr key={i}><td>{h.date}</td><td>{h.vendor}</td><td className="text-right">{h.qty}</td><td className="text-center">{h.unit}</td>
+                <td className="text-right font-semibold">{yen(h.price)}</td><td className="text-right">{yen(h.amt)}</td><td className="max-w-[14rem] truncate" title={h.site}>{h.site}</td></tr>
+            ))}</tbody>
+          </table>
+        ) : <div className="text-slate-400 text-sm py-4 text-center">この品目の履歴は見つかりません</div>}
+      </div>
+    </div>
+  );
+}
+
+// ================= アプリ本体 =================
+function App() {
+  const [loaded, setLoaded] = useState(false);
+  const [tab, setTab] = useState("search");
+  const [q, setQ] = useState("");
+  const [netQ, setNetQ] = useState(""); const [netEdited, setNetEdited] = useState(false);
+  const [sekisan, setSekisan] = useState({ ok: false, master: [], reason: "読込中…" });
+  const [zairyo, setZairyo] = useState({ items: [], history: [], importedAt: "", fileName: "" });
+  const [cases, setCases] = useState([]);
+  const [cur, setCur] = useState(() => blankCase());
+  const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS }));
+  const [bulkState, setBulkState] = useState({ text: "", rows: [], srcInfo: "" }); // まとめて検索の作業内容（タブ移動で消えないよう App が保持）
+  const [docs, setDocs] = useState({});          // 品目キー→資料リンク配列（カタログ/仕様書/姿図）
+  const [market, setMarket] = useState({});      // ネット価格DB：品目キー→{model,name,maker,unit,adoptedId,entries[]}
+  const [priceItem, setPriceItem] = useState(null); // {item, onAdopt}
+  const [docsItem, setDocsItem] = useState(null);
+  const [histItem, setHistItem] = useState(null);
+  const [preview, setPreview] = useState(false);
+  const [savedMsg, setSavedMsg] = useState("");
+  const [addFlash, setAddFlash] = useState("");
+  const [saveState, setSaveState] = useState("");
+  // --- バックアップ関連（見積ソフトと同方式） ---
+  const fsSupported = (typeof window !== "undefined" && typeof window.showSaveFilePicker === "function");
+  const fsHandleRef = useRef(null); const fsWritingRef = useRef(false);
+  const [fsName, setFsName] = useState("");
+  const [fsReady, setFsReady] = useState(false);
+  const [fsLastWrite, setFsLastWrite] = useState(() => parseInt(localStorage.getItem("kakaku_fs_last_write") || "0", 10) || 0);
+  const [lastBackup, setLastBackup] = useState(() => parseInt(localStorage.getItem("kakaku_last_backup") || "0", 10) || 0);
+  const [autoRestored, setAutoRestored] = useState(null);   // 起動時にファイルから自動復元した通知
+  const [permWarn, setPermWarn] = useState(false);          // 自動保存の権限切れ警告
+  const [recoveryNotice, setRecoveryNotice] = useState(null); // 世代から案件を復旧した通知
+  const [gens, setGens] = useState([]);                     // 世代一覧（表示用: at/ts/count）
+  const lastGenRef = useRef({ count: 0 });
+  const latestRef = useRef({}); latestRef.current = { cases, cur, settings, zairyo, docs, market, sekisan };
+
+  // ---- 起動読込 ----
+  const loadSekisan = useCallback(async () => {
+    const r = await window.readSekisanMaster();
+    if (r.ok) { setSekisan({ ok: true, master: r.master, ts: r.ts, snap: false }); return r; }
+    // 直読できない（スマホ・別PC）→ バックアップに同梱された見積マスタのスナップショットを使う
+    try {
+      const sn = await window.storage.get(KEY_SEKISAN_SNAP);
+      if (sn && sn.value) { const d = JSON.parse(sn.value); if (d && d.master && d.master.length) { setSekisan({ ok: true, master: d.master, ts: d.ts, snap: true, at: d.at || "" }); return { ok: true, snap: true }; } }
+    } catch (e) {}
+    setSekisan({ ok: false, master: [], reason: r.reason });
+    return r;
+  }, []);
+  useEffect(() => {
+    (async () => {
+      try {
+        // 永続ストレージを要求（ブラウザ都合のサイトデータ退避を抑止）
+        try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {}); } catch (e) {}
+        const m = await window.storage.get(KEY_MAIN);
+        let mainD = null;
+        if (m && m.value) { try { mainD = JSON.parse(m.value); } catch (e) {} }
+        const curTs = (mainD && mainD.ts) || 0;
+        // === 自動保存ファイル(FSA)からの起動時自動復元：IDBが飛んでも自己回復。ファイルが新しい/現データ消失時のみ＝新しいローカル編集を誤って戻さない ===
+        if (fsSupported) {
+          try {
+            const h = await idbHandleGet();
+            if (h) {
+              fsHandleRef.current = h;
+              setFsName(h.name || "自動保存.json");
+              let p = "prompt"; try { p = await h.queryPermission({ mode: "readwrite" }); } catch (e) {}
+              if (p === "granted") {
+                setFsReady(true);
+                try {
+                  const d = JSON.parse(await (await h.getFile()).text());
+                  if (d && d.app === "kakaku_chousa_full" && d.main && !payloadEmpty(d) && ((d.ts || 0) > curTs || curTs === 0)) {
+                    mainD = { version: 1, ...d.main, ts: d.ts || Date.now() };
+                    await window.storage.set(KEY_MAIN, JSON.stringify(mainD));
+                    if (d.zairyo && d.zairyo.items) { await window.storage.set(KEY_ZAIRYO, JSON.stringify(d.zairyo)); setZairyo(d.zairyo); }
+                    if (d.docs) { await window.storage.set(KEY_DOCS, JSON.stringify(d.docs)); setDocs(d.docs); }
+                    if (d.market) { await window.storage.set(KEY_MARKET, JSON.stringify(d.market)); setMarket(d.market); }
+                    if (d.sekisanSnap && d.sekisanSnap.master && d.sekisanSnap.master.length) { await window.storage.set(KEY_SEKISAN_SNAP, JSON.stringify(d.sekisanSnap)); }
+                    setAutoRestored({ savedAt: d.savedAt || "" });
+                  }
+                } catch (e) {}
+              } else { setPermWarn(true); } // 権限が無く自動で読めない→バナーでワンクリック再有効化
+            }
+          } catch (e) {}
+        }
+        let loadedCases = [];
+        if (mainD) {
+          if (mainD.cases) loadedCases = mainD.cases;
+          if (mainD.cur) setCur({ ...blankCase(), ...mainD.cur, dest: { ...blankCase().dest, ...(mainD.cur.dest || {}) } });
+          if (mainD.settings) setSettings((s) => ({ ...DEFAULT_SETTINGS, ...mainD.settings, company: { ...DEFAULT_SETTINGS.company, ...(mainD.settings.company || {}) }, links: (mainD.settings.links && mainD.settings.links.length) ? mainD.settings.links : DEFAULT_LINKS, urlPatterns: (mainD.settings.urlPatterns && mainD.settings.urlPatterns.length) ? mainD.settings.urlPatterns : DEFAULT_URL_PATTERNS }));
+        } else {
+          // 初回：見積ソフトの会社情報をプレフィル（localStorageは file:// で共有）
+          try {
+            const co = JSON.parse(localStorage.getItem("sakae_company_info") || "{}");
+            if (co && (co.name || co.address)) setSettings((s) => ({ ...s, company: { ...s.company, name: co.name || "", address: co.address || "", tel: co.phone || "", invoice: co.invoice || "", rep: co.rep || "" } }));
+          } catch (e) {}
+        }
+        // === 世代バックアップからの自己修復マージ：liveに無い(=失われた)案件だけ復元。意図的に削除したもの(墓石)は除外 ===
+        let gensArr = [];
+        try { const bkR = await window.storage.get(KEY_GENS); gensArr = JSON.parse((bkR && bkR.value) || "[]"); if (!Array.isArray(gensArr)) gensArr = []; } catch (e) { gensArr = []; }
+        setGens(gensArr.map((g) => ({ at: g.at, ts: g.ts, count: g.count })));
+        const del = readDeleted();
+        const byId = new Map();
+        loadedCases.forEach((x) => { if (x && x.id) byId.set(x.id, x); });
+        let recovered = 0;
+        gensArr.forEach((g) => (g && g.list ? g.list : []).forEach((x) => {
+          if (!x || !x.id) return;
+          const xts = caseTs(x);
+          if (del[x.id] != null && del[x.id] >= xts) return; // 削除済み(墓石が版より新しい)は復元しない
+          const pr = byId.get(x.id);
+          if (!pr) { byId.set(x.id, x); recovered++; }              // 失った案件を復元
+          else if (xts > caseTs(pr)) { byId.set(x.id, x); }         // より新しい版があれば更新
+        }));
+        const merged = [...byId.values()].filter((x) => !(del[x.id] != null && del[x.id] >= caseTs(x))).sort((a, b) => caseTs(b) - caseTs(a));
+        setCases(merged);
+        lastGenRef.current = { count: merged.length };
+        if (recovered > 0) setRecoveryNotice({ recovered });
+        const z = await window.storage.get(KEY_ZAIRYO);
+        if (z && z.value) { try { const d = JSON.parse(z.value); if (d && d.items) setZairyo(d); } catch (e) {} }
+        const dk = await window.storage.get(KEY_DOCS);
+        if (dk && dk.value) { try { const d = JSON.parse(dk.value); if (d && typeof d === "object") setDocs(d); } catch (e) {} }
+        const mk = await window.storage.get(KEY_MARKET);
+        if (mk && mk.value) { try { const d = JSON.parse(mk.value); if (d && typeof d === "object") setMarket(d); } catch (e) {} }
+        await loadSekisan();
+      } finally { setLoaded(true); }
+    })();
+  }, []);
+
+  // ---- 自動保存（600msデバウンス） ----
+  useEffect(() => {
+    if (!loaded) return;
+    setSaveState("…");
+    const t = setTimeout(async () => {
+      try { await window.storage.set(KEY_MAIN, JSON.stringify({ version: 1, cases, cur, settings, ts: Date.now() })); setSaveState("保存済 " + new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })); }
+      catch (e) { setSaveState("保存失敗"); }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [cases, cur, settings, loaded]);
+
+  // 資料リンクの永続化（案件データとは別キー。バックアップには同梱される）
+  useEffect(() => { if (!loaded) return; window.storage.set(KEY_DOCS, JSON.stringify(docs)).catch(() => {}); }, [docs, loaded]);
+  const saveDocs = (key, list) => setDocs((prev) => { const n = { ...prev }; if (!list || !list.length) delete n[key]; else n[key] = list; return n; });
+  // ネット価格DBの永続化
+  useEffect(() => { if (!loaded) return; window.storage.set(KEY_MARKET, JSON.stringify(market)).catch(() => {}); }, [market, loaded]);
+  const saveMarket = (key, rec) => setMarket((prev) => { const n = { ...prev }; if (!rec) delete n[key]; else n[key] = rec; return n; });
+  const showPrice = (item, onAdopt) => setPriceItem({ item, onAdopt: onAdopt || null });
+
+  // ===== バックアップ（見積ソフトと同方式） =====
+  // 全データのバックアップペイロード。手動DL・FSA自動保存・復元で共用
+  const buildBackupPayload = () => { const L = latestRef.current; return { version: 1, app: "kakaku_chousa_full", savedAt: new Date().toLocaleString("ja-JP"), ts: Date.now(), main: { cases: L.cases, cur: L.cur, settings: L.settings }, zairyo: L.zairyo, docs: L.docs, market: L.market,
+    sekisanSnap: (L.sekisan && L.sekisan.ok && L.sekisan.master && L.sekisan.master.length) ? { master: L.sekisan.master, ts: L.sekisan.ts || 0, at: L.sekisan.snap ? (L.sekisan.at || "") : new Date().toLocaleString("ja-JP") } : undefined }; };
+  const applyBackupObj = async (d) => {
+    await window.storage.set(KEY_MAIN, JSON.stringify({ version: 1, ...d.main, ts: d.ts || Date.now() }));
+    if (d.zairyo) await window.storage.set(KEY_ZAIRYO, JSON.stringify(d.zairyo));
+    if (d.docs) await window.storage.set(KEY_DOCS, JSON.stringify(d.docs));
+    if (d.market) await window.storage.set(KEY_MARKET, JSON.stringify(d.market));
+    if (d.sekisanSnap && d.sekisanSnap.master && d.sekisanSnap.master.length) await window.storage.set(KEY_SEKISAN_SNAP, JSON.stringify(d.sekisanSnap)); // スマホ等で見積マスタを検索できるように
+  };
+  // FSA自動保存：データ変更のたび設定済みファイルへ書き出し。失敗（権限失効等）は停止して再有効化を促す＝無限リトライしない
+  const fsWrite = async (reason) => {
+    const h = fsHandleRef.current; if (!h || !fsReady || fsWritingRef.current) return;
+    fsWritingRef.current = true;
+    try {
+      const payload = buildBackupPayload();
+      if (payloadEmpty(payload)) { if (reason === "manual") alert("データが空のため書き出しません（空データで既存バックアップを上書きしない保護です）。"); return; }
+      const w = await h.createWritable();
+      await w.write(JSON.stringify(payload));
+      await w.close();
+      const now = Date.now(); setFsLastWrite(now); lsSet("kakaku_fs_last_write", String(now)); setPermWarn(false);
+    } catch (e) {
+      setFsReady(false); setPermWarn(true);
+      if (reason === "manual") alert("自動保存に失敗しました：" + ((e && e.message) || e));
+    } finally { fsWritingRef.current = false; }
+  };
+  const setupAutoSaveTarget = async () => {
+    if (!fsSupported) { alert("このブラウザは自動保存（実ファイルへの書き出し）に非対応です。Chrome/Edge を推奨します。手動の全データバックアップをご利用ください。"); return; }
+    try {
+      const h = await window.showSaveFilePicker({ suggestedName: "価格調査_全データ_自動保存.json", types: [{ description: "JSON", accept: { "application/json": [".json"] } }] });
+      fsHandleRef.current = h;
+      await idbHandleSet(h);
+      setFsName(h.name || "自動保存.json");
+      setFsReady(true); setPermWarn(false);
+      // setFsReadyは非同期のため直接書き込む
+      try { const payload = buildBackupPayload(); if (!payloadEmpty(payload)) { const w = await h.createWritable(); await w.write(JSON.stringify(payload)); await w.close(); const now = Date.now(); setFsLastWrite(now); lsSet("kakaku_fs_last_write", String(now)); } } catch (e) {}
+      alert("自動保存を設定しました。以後、保存のたびにこのファイルへ自動で書き出します。\n※このファイルをGoogleドライブ等に置くと遠隔バックアップにもなります。");
+    } catch (e) { if (e && e.name !== "AbortError") alert("設定に失敗しました：" + ((e && e.message) || e)); }
+  };
+  const enableAutoSave = async () => {
+    const h = fsHandleRef.current; if (!h) { setupAutoSaveTarget(); return; }
+    try {
+      const p = await h.requestPermission({ mode: "readwrite" });
+      if (p === "granted") {
+        setFsReady(true); setPermWarn(false);
+        try { const payload = buildBackupPayload(); if (!payloadEmpty(payload)) { const w = await h.createWritable(); await w.write(JSON.stringify(payload)); await w.close(); const now = Date.now(); setFsLastWrite(now); lsSet("kakaku_fs_last_write", String(now)); } } catch (e) {}
+      } else alert("書き込み権限が許可されませんでした。");
+    } catch (e) { alert("有効化に失敗しました：" + ((e && e.message) || e)); }
+  };
+  const restoreFromHandle = async () => {
+    const h = fsHandleRef.current; if (!h) { restoreFromPicker(); return; }
+    if (!window.confirm("自動保存ファイルの内容で、現在のデータを全て置き換えます。よろしいですか？")) return;
+    try {
+      const perm = await h.queryPermission({ mode: "read" });
+      if (perm !== "granted") { const rp = await h.requestPermission({ mode: "read" }); if (rp !== "granted") { alert("読み取り権限がありません。"); return; } }
+      const d = JSON.parse(await (await h.getFile()).text());
+      if (!(d && d.app === "kakaku_chousa_full" && d.main)) { alert("自動保存ファイルの形式が不正です。"); return; }
+      await applyBackupObj(d);
+      alert("自動保存ファイルから復元しました。画面を再読み込みします。");
+      window.location.reload();
+    } catch (e) { alert("復元に失敗しました：" + ((e && e.message) || e)); }
+  };
+  const restoreFromPicker = async () => {
+    if (!fsSupported) { alert("このブラウザは非対応です。『バックアップから復元』でJSONを選んでください。"); return; }
+    try {
+      const [h] = await window.showOpenFilePicker({ types: [{ description: "JSON", accept: { "application/json": [".json"] } }] });
+      if (!window.confirm("選んだファイルの内容で、現在のデータを全て置き換えます。よろしいですか？")) return;
+      const d = JSON.parse(await (await h.getFile()).text());
+      if (!(d && d.app === "kakaku_chousa_full" && d.main)) { alert("全データバックアップの形式ではありません。"); return; }
+      await applyBackupObj(d);
+      fsHandleRef.current = h; await idbHandleSet(h); // このファイルを以後の自動保存先にも設定
+      alert("復元しました。画面を再読み込みします。");
+      window.location.reload();
+    } catch (e) { if (e && e.name !== "AbortError") alert("復元に失敗しました：" + ((e && e.message) || e)); }
+  };
+  // FSA自動保存：データ変更後4秒デバウンスで書き出し（fsReady時のみ）
+  useEffect(() => {
+    if (!fsReady || !loaded) return;
+    const t = setTimeout(() => { fsWrite("auto"); }, 4000);
+    return () => clearTimeout(t);
+  }, [cases, cur, settings, zairyo, docs, market, fsReady, loaded]);
+  // 自動ローリング世代バックアップ：案件一覧をIDB別キーへ日時付き最大10世代。件数が半減する変化は追記しない（誤消去の巻き戻し保護）
+  useEffect(() => {
+    if (!loaded || !cases.length) return;
+    const t = setTimeout(async () => {
+      try {
+        const prevCount = lastGenRef.current.count;
+        if (prevCount >= 4 && cases.length < prevCount / 2) return; // 半減は保護（古い世代を残す）
+        const raw = await window.storage.get(KEY_GENS);
+        let g = []; try { g = JSON.parse((raw && raw.value) || "[]"); if (!Array.isArray(g)) g = []; } catch (e) { g = []; }
+        g.unshift({ at: new Date().toLocaleString("ja-JP"), ts: Date.now(), count: cases.length, list: cases });
+        g = g.slice(0, 10);
+        await window.storage.set(KEY_GENS, JSON.stringify(g));
+        setGens(g.map((x) => ({ at: x.at, ts: x.ts, count: x.count })));
+        lastGenRef.current = { count: cases.length };
+      } catch (e) {}
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [cases, loaded]);
+  // 世代から失われた案件を手動復旧（起動時マージと同じロジック）
+  const recoverFromGens = async () => {
+    try {
+      const raw = await window.storage.get(KEY_GENS);
+      let gensArr = []; try { gensArr = JSON.parse((raw && raw.value) || "[]"); if (!Array.isArray(gensArr)) gensArr = []; } catch (e) {}
+      const del = readDeleted();
+      const byId = new Map();
+      cases.forEach((x) => { if (x && x.id) byId.set(x.id, x); });
+      let recovered = 0;
+      gensArr.forEach((g) => (g && g.list ? g.list : []).forEach((x) => {
+        if (!x || !x.id) return;
+        const xts = caseTs(x);
+        if (del[x.id] != null && del[x.id] >= xts) return;
+        const pr = byId.get(x.id);
+        if (!pr) { byId.set(x.id, x); recovered++; }
+        else if (xts > caseTs(pr)) { byId.set(x.id, x); }
+      }));
+      if (!recovered) { alert("世代バックアップに、現在の一覧に無い案件はありませんでした。"); return; }
+      setCases([...byId.values()].sort((a, b) => caseTs(b) - caseTs(a)));
+      alert("世代バックアップから " + recovered + " 件の案件を復旧しました。");
+    } catch (e) { alert("復旧に失敗しました：" + ((e && e.message) || e)); }
+  };
+
+  // ---- 材料マスタ取込 ----
+  const importZairyo = async (file) => {
+    try {
+      const buf = await file.arrayBuffer();
+      const d = parseZairyoXlsx(buf, file.name);
+      setZairyo(d);
+      await window.storage.set(KEY_ZAIRYO, JSON.stringify(d));
+      alert("材料マスタを取り込みました：" + d.items.length + " 品目・履歴 " + d.history.length + " 行");
+    } catch (e) { alert("取込に失敗しました：" + ((e && e.message) || e)); }
+  };
+
+  // ---- 案件操作 ----
+  const flash = (msg, set) => { set(msg); setTimeout(() => set(""), 2000); };
+  const addRowFrom = (src) => {
+    const mk = num(settings.defaultMarkup) || 1.3;
+    const cost = num(src.cost);
+    setCur((c) => ({
+      ...c, updatedAt: new Date().toISOString(),
+      rows: [...c.rows, { ...blankRow(mk), ...src, qty: 1, markup: mk, bid: cost ? Math.round(cost * mk) : "", bidManual: false }]
+    }));
+    flash("「" + (src.model || src.name || "").slice(0, 20) + "」を案件に追加しました（案件タブへ）", setAddFlash);
+  };
+  // まとめて検索から複数行を一度に案件へ追加
+  const addRowsBulk = (items) => {
+    if (!items || !items.length) return;
+    const mk = num(settings.defaultMarkup) || 1.3;
+    setCur((c) => ({
+      ...c, updatedAt: new Date().toISOString(),
+      rows: [...c.rows, ...items.map((src) => { const cost = num(src.cost); return { ...blankRow(mk), ...src, qty: num(src.qty) || 1, markup: mk, bid: cost ? Math.round(cost * mk) : "", bidManual: false }; })],
+    }));
+    flash(items.length + "件を案件に追加しました（案件タブへ）", setAddFlash);
+  };
+  const saveCase = () => {
+    const nm = (cur.name || "").trim();
+    if (!nm) { alert("案件名を入力してください（案件タブの上部）"); setTab("case"); return; }
+    const now = new Date().toISOString();
+    setCases((cs) => {
+      const dup = cs.find((c) => c.id !== cur.id && (c.name || "").trim() === nm);
+      let list = cs;
+      if (dup) {
+        if (confirm("同名の案件「" + nm + "」があります。上書き保存しますか？\n［OK＝上書き／キャンセル＝別IDで追加保存］")) { list = cs.filter((c) => c.id !== dup.id); markDeleted(dup.id); }
+      }
+      const entry = { ...cur, name: nm, updatedAt: now, ts: Date.now() };
+      const i = list.findIndex((c) => c.id === cur.id);
+      return i >= 0 ? list.map((c) => (c.id === cur.id ? entry : c)) : [entry, ...list];
+    });
+    flash("保存しました", setSavedMsg);
+  };
+  const newCase = () => {
+    if (caseHasContent(cur)) {
+      if (!confirm("現在の案件を保存してから新規を開始します。よろしいですか？\n（案件名が空の場合は「無題 日付」で保存されます）")) return;
+      const nm = (cur.name || "").trim() || ("無題 " + today());
+      const entry = { ...cur, name: nm, updatedAt: new Date().toISOString(), ts: Date.now() };
+      setCases((cs) => { const i = cs.findIndex((c) => c.id === cur.id); return i >= 0 ? cs.map((c) => (c.id === cur.id ? entry : c)) : [entry, ...cs]; });
+    }
+    setCur(blankCase()); setTab("case");
+  };
+  const openCase = (c) => {
+    if (caseHasContent(cur) && cur.id !== c.id && !cases.some((x) => x.id === cur.id)) {
+      if (!confirm("現在の未保存の案件は破棄されます。「" + (c.name || "無題") + "」を開きますか？")) return;
+    }
+    setCur(JSON.parse(JSON.stringify({ ...blankCase(), ...c, dest: { ...blankCase().dest, ...(c.dest || {}) } })));
+    setTab("case");
+  };
+  const dupCase = (c) => {
+    const copy = JSON.parse(JSON.stringify(c));
+    copy.id = uid(); copy.name = (c.name || "無題") + " (コピー)"; copy.updatedAt = new Date().toISOString(); copy.ts = Date.now();
+    copy.rows = (copy.rows || []).map((r) => ({ ...r, id: uid() }));
+    setCases((cs) => [copy, ...cs]);
+  };
+  const delCase = (id) => { markDeleted(id); setCases((cs) => cs.filter((c) => c.id !== id)); }; // 墓石を記録＝世代復旧で復活させない
+
+  // ---- 出力 ----
+  const exportMitsumori = () => {
+    const rows = cur.rows.filter((r) => (r.name || "").trim() || (r.model || "").trim()).map((r) => ({
+      rowId: uid(), masterId: null, name: [(r.name || "").trim(), (r.model || "").trim()].filter(Boolean).join(" "),
+      unit: r.unit || "式", cat: r.catName || "", kind: "new", trade: "電工",
+      qty: num(r.qty) || 1, std: 0, cost: num(r.cost) || 0, markup: num(r.markup) || 1.3, bid: rowBid(r) || 0,
+      labor: 0, kamoku: "電気設備", costCat: "", costAmt: "", secCat: "",
+    }));
+    if (!rows.length) { alert("明細がありません"); return; }
+    const payload = { version: 1, app: "minkan_mitsumori", savedAt: new Date().toLocaleString("ja-JP"), project: { ...MITSUMORI_PROJECT, name: (cur.name || "価格調査").trim(), note: cur.memo || "" }, rows };
+    const nm = "見積連携_" + safeName(cur.name || "価格調査") + "_" + ymdStr() + ".json";
+    downloadBlob(new Blob([JSON.stringify(payload, null, 1)], { type: "application/json" }), nm);
+    alert("「" + nm + "」を書き出しました。\n見積ソフトの 一時保存メニュー「ファイルから読込」か、開始画面の個別取込で読み込んでください。");
+  };
+  const exportExcel = async () => {
+    if (!cur.rows.some((r) => (r.name || "").trim() || (r.model || "").trim())) { alert("明細がありません"); return; }
+    try { const nm = await exportRequestExcel(cur, settings, !!settings.priceOnSheet); flash("Excelを出力しました：" + nm, setSavedMsg); }
+    catch (e) { alert("Excel出力に失敗しました：" + ((e && e.message) || e)); }
+  };
+  const doPrint = () => {
+    document.body.classList.add("printing");
+    const done = () => { document.body.classList.remove("printing"); window.removeEventListener("afterprint", done); };
+    window.addEventListener("afterprint", done);
+    setTimeout(() => window.print(), 50);
+  };
+
+  // ---- バックアップ ----
+  const exportAll = async () => {
+    try {
+      const payload = buildBackupPayload();
+      downloadBlob(new Blob([JSON.stringify(payload)], { type: "application/json" }), "価格調査_全データ_" + ymdStr() + ".json");
+      const now = Date.now(); lsSet("kakaku_last_backup", String(now)); setLastBackup(now);
+    } catch (e) { alert("バックアップに失敗しました：" + ((e && e.message) || e)); }
+  };
+  const importAll = (file) => {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const d = JSON.parse(e.target.result);
+        if (!(d && d.app === "kakaku_chousa_full" && d.main)) { alert("価格調査ソフトのバックアップではありません"); return; }
+        if (!confirm("現在のデータ（案件・設定・取込済み材料マスタ）を、このバックアップで全て置き換えます。よろしいですか？")) return;
+        await applyBackupObj(d);
+        alert("復元しました。画面を再読み込みします。");
+        location.reload();
+      } catch (err) { alert("復元に失敗しました：" + err); }
+    };
+    reader.readAsText(file);
+  };
+
+  const vendorList = useMemo(() => {
+    const s = new Set();
+    (zairyo.items || []).forEach((x) => { if (x.vendor) s.add(x.vendor); });
+    (zairyo.history || []).forEach((x) => { if (x.vendor) s.add(x.vendor); });
+    return Array.from(s).sort();
+  }, [zairyo]);
+
+  const TABS = [["search", "🔍 価格検索"], ["bulk", "📦 まとめて検索"], ["case", "📋 案件・集計"], ["list", "🗂 案件一覧"], ["settings", "⚙ 設定"]];
+  return (
+    <div className="max-w-[1200px] mx-auto p-3">
+      <div className="flex items-center gap-3 mb-3 flex-wrap">
+        <h1 className="text-xl font-bold text-cyan-900">💴 価格調査ソフト</h1>
+        <span className="text-xs text-slate-400 app-sub">仕入価格・市場価格の検索と簡易集計</span>
+        <span className="ml-auto text-xs text-slate-400">{saveState}</span>
+      </div>
+      <div className="flex gap-1 mb-3 overflow-x-auto">
+        {TABS.map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)}
+            className={"px-3.5 py-1.5 rounded-t text-sm shrink-0 " + (tab === k ? "bg-cyan-700 text-white font-semibold" : "bg-white text-slate-600 hover:bg-slate-50 border border-b-0 border-slate-200")}>
+            {label}{k === "case" && cur.rows.length ? <span className="ml-1 text-xs bg-white/25 rounded-full px-1.5">{cur.rows.length}</span> : null}
+          </button>
+        ))}
+      </div>
+      {addFlash && <div className="fixed top-3 right-3 z-50 bg-emerald-600 text-white text-sm rounded px-3 py-2 shadow-lg">{addFlash}</div>}
+      {permWarn && (
+        <div className="mb-3 bg-amber-50 border border-amber-300 text-amber-800 text-sm rounded px-3 py-2 flex items-center gap-2 flex-wrap">
+          ⚠ 自動バックアップの権限が切れています{fsName ? "（" + fsName + "）" : ""}。自動保存は停止中です。
+          <Btn variant="primary" onClick={enableAutoSave}>🔓 再有効化</Btn>
+          <Btn variant="ghost" onClick={() => setPermWarn(false)}>✕</Btn>
+        </div>
+      )}
+      {autoRestored && (
+        <div className="mb-3 bg-emerald-50 border border-emerald-300 text-emerald-800 text-sm rounded px-3 py-2 flex items-center gap-2 flex-wrap">
+          ✅ 自動保存ファイル{autoRestored.savedAt ? "（" + autoRestored.savedAt + " 保存分）" : ""}からデータを復元しました。
+          <Btn variant="ghost" onClick={() => setAutoRestored(null)}>✕</Btn>
+        </div>
+      )}
+      {recoveryNotice && (
+        <div className="mb-3 bg-sky-50 border border-sky-300 text-sky-800 text-sm rounded px-3 py-2 flex items-center gap-2 flex-wrap">
+          ♻ 世代バックアップから案件 {recoveryNotice.recovered} 件を復旧しました。
+          <Btn variant="ghost" onClick={() => setRecoveryNotice(null)}>✕</Btn>
+        </div>
+      )}
+
+      {tab === "search" && <SearchTab q={q} setQ={setQ} sekisan={sekisan} zairyo={zairyo} settings={settings} docs={docs} market={market}
+        onAddRow={addRowFrom} onShowHist={setHistItem} onShowDocs={setDocsItem} onShowPrice={showPrice} netQ={netQ} setNetQ={setNetQ} netEdited={netEdited} setNetEdited={setNetEdited} />}
+      {tab === "bulk" && <BulkTab sekisan={sekisan} zairyo={zairyo} settings={settings} docs={docs} market={market} state={bulkState} setState={setBulkState} onAddRows={addRowsBulk} onShowDocs={setDocsItem} onShowPrice={showPrice} />}
+      {tab === "case" && <CaseTab cur={cur} setCur={setCur} settings={settings} setSettings={setSettings} vendorList={vendorList} docs={docs} market={market} onShowDocs={setDocsItem} onShowPrice={showPrice}
+        onSaveCase={saveCase} onNewCase={newCase} onPreview={() => setPreview(true)} onExportExcel={exportExcel} onExportMitsumori={exportMitsumori} savedMsg={savedMsg} />}
+      {tab === "list" && <ListTab cases={cases} onOpen={openCase} onDup={dupCase} onDel={delCase} />}
+      {tab === "settings" && <SettingsTab settings={settings} setSettings={setSettings} sekisan={sekisan} zairyo={zairyo} docs={docs} market={market}
+        onReloadSekisan={loadSekisan} onImportZairyo={importZairyo} onExportAll={exportAll} onImportAll={importAll}
+        fs={{ supported: fsSupported, name: fsName, ready: fsReady, lastWrite: fsLastWrite }} lastBackup={lastBackup} gens={gens}
+        onSetupFs={setupAutoSaveTarget} onEnableFs={enableAutoSave} onFsWriteNow={() => fsWrite("manual")}
+        onRestoreHandle={restoreFromHandle} onRestorePicker={restoreFromPicker} onRecoverGens={recoverFromGens} />}
+
+      {histItem && <HistModal item={histItem} history={zairyo.history} onClose={() => setHistItem(null)} />}
+      {docsItem && <DocsModal item={docsItem} docs={docs} settings={settings} onSaveDocs={saveDocs} onClose={() => setDocsItem(null)} />}
+      {priceItem && <PriceModal item={priceItem.item} market={market} settings={settings} onSave={saveMarket} onAdopt={priceItem.onAdopt} onClose={() => setPriceItem(null)} />}
+
+      {preview && (
+        <div className="print-backdrop fixed inset-0 bg-black/50 z-40 overflow-auto p-4" onClick={() => setPreview(false)}>
+          <div className="print-host mx-auto" style={{ maxWidth: "210mm" }} onClick={(e) => e.stopPropagation()}>
+            <div className="no-print flex gap-1.5 justify-end mb-2">
+              <label className="text-sm text-white flex items-center gap-1.5 mr-auto">
+                <input type="checkbox" checked={!!settings.priceOnSheet} onChange={(e) => setSettings((s) => ({ ...s, priceOnSheet: e.target.checked }))} />参考単価を載せる
+              </label>
+              <Btn variant="primary" onClick={doPrint}>🖨 印刷（PDF保存）</Btn>
+              <Btn onClick={() => setPreview(false)}>閉じる</Btn>
+            </div>
+            <RequestSheet cur={cur} settings={settings} showPrice={!!settings.priceOnSheet} />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+<script>
+  // 公開版（https）ではPWAとして動作させる：ホーム画面追加・オフライン起動用のキャッシュ。file:// では何もしない（manifestもfile://では取得できずエラーになるため付けない）
+  if (location.protocol !== "file:") { var mf = document.createElement("link"); mf.rel = "manifest"; mf.href = "manifest.webmanifest"; document.head.appendChild(mf); }
+  if ((location.protocol === "https:" || location.hostname === "localhost" || location.hostname === "127.0.0.1") && "serviceWorker" in navigator) { navigator.serviceWorker.register("sw.js").catch(function () {}); }
+</script>
+</body>
+</html>

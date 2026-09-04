@@ -1,0 +1,19 @@
+# === データ・バックアップは絶対に公開しない ===
+自動保存/
+_backup/
+*.json
+*.bak
+*.zip
+
+# OS が自動生成するファイル
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+._*
+
+# エディタ・一時ファイル
+*.tmp
+*~
+.vscode/
