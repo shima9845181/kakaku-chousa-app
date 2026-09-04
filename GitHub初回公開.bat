@@ -1,13 +1,14 @@
 @echo off
-chcp 65001 >nul
 setlocal
 rem ============================================================
-rem  価格調査ソフト  ---  GitHub への初回公開（1回だけ実行）
-rem  1) このフォルダを git 管理にして初回コミット
-rem  2) GitHub に公開リポジトリ kakaku-chousa-app を作成して push
-rem  3) GitHub Pages を有効化（数分で公開URLが使えるようになります）
-rem  ※ 自動保存/ _backup/ *.json は .gitignore で除外＝データは公開されません
-rem  ※ 2回目以降の更新は deploy.bat を使ってください
+rem  Kakaku-Chousa Soft --- first-time publish to GitHub (run ONCE)
+rem  1) init git in this folder and make the first commit
+rem  2) create public repo "kakaku-chousa-app" on GitHub and push
+rem  3) enable GitHub Pages (public URL becomes available in a few minutes)
+rem  NOTE: data folders/files (jidou-hozon, _backup, *.json) are excluded
+rem        by .gitignore, so NO data is published.
+rem  For later updates use deploy.bat instead.
+rem  (ASCII only: Japanese text in a .bat breaks cmd parsing.)
 rem ============================================================
 
 set "GIT=C:\Program Files\Git\cmd\git.exe"
@@ -17,41 +18,41 @@ if not exist "%GH%" set "GH=gh"
 
 cd /d "%~dp0"
 echo.
-echo === 1) git 初期化・初回コミット ===
+echo === 1) git init / first commit ===
 if not exist ".git" "%GIT%" init -b main
 "%GIT%" add -A
-echo --- 公開されるファイル一覧 ---
+echo --- files to be published ---
 "%GIT%" diff --cached --name-only
 echo -----------------------------
-"%GIT%" diff --cached --name-only | findstr /I /R "自動保存 \.json$ _backup \.zip$" >nul
+"%GIT%" diff --cached --name-only | findstr /I /R "\.json$ _backup \.zip$" >nul
 if not errorlevel 1 (
-  echo *** データファイルが含まれています。公開を中止します（.gitignore を確認してください） ***
+  echo *** DATA FILE DETECTED. ABORT. Check .gitignore ***
   pause
   exit /b 1
 )
-"%GIT%" -c user.name=shima9845181 -c user.email=shima9845181@gmail.com commit -m "価格調査ソフト: 公開版（スマホ・PWA）初回登録"
-if errorlevel 1 echo （コミット済み、または変更なし）
+"%GIT%" -c user.name=shima9845181 -c user.email=shima9845181@gmail.com commit -m "Kakaku-Chousa Soft: initial publish (smartphone / PWA)"
+if errorlevel 1 echo (already committed or nothing to commit)
 
 echo.
-echo === 2) GitHub にリポジトリを作成して push ===
-"%GH%" repo create kakaku-chousa-app --public --source=. --remote=origin --push --description "価格調査ソフト - 仕入価格・市場価格の検索と簡易集計（さかえ電気）"
+echo === 2) create GitHub repo and push ===
+"%GH%" repo create kakaku-chousa-app --public --source=. --remote=origin --push --description "Kakaku-Chousa Soft - purchase/market price lookup and quick estimate (Sakae Denki, browser-only, data stays on device)"
 if errorlevel 1 (
-  echo （作成済みの場合は push のみ試します）
+  echo (repo may already exist - trying push only)
   "%GIT%" remote get-url origin >nul 2>&1 || "%GIT%" remote add origin https://github.com/shima9845181/kakaku-chousa-app.git
   "%GIT%" push -u origin main
   if errorlevel 1 goto err
 )
 
 echo.
-echo === 3) GitHub Pages を有効化 ===
+echo === 3) enable GitHub Pages ===
 "%GH%" api -X POST repos/shima9845181/kakaku-chousa-app/pages -f build_type=legacy -f "source[branch]=main" -f "source[path]=/" >nul 2>&1
-if errorlevel 1 echo （既に有効、または後で GitHub の Settings ^> Pages で main / root を選んでください）
+if errorlevel 1 echo (already enabled, or enable later in GitHub Settings ^> Pages : main / root)
 
 echo.
 echo ============================================================
-echo  完了しました。数分後に下のURLをスマホで開いてください:
+echo  DONE. Open this URL on your phone in a few minutes:
 echo  https://shima9845181.github.io/kakaku-chousa-app/
-echo  （開いたら「ホーム画面に追加」でアプリのように使えます）
+echo  (then "Add to Home Screen" to use it like an app)
 echo ============================================================
 echo.
 pause
@@ -59,8 +60,8 @@ exit /b 0
 
 :err
 echo.
-echo *** エラーが発生しました。上の表示をご確認ください。 ***
-echo （gh のログインが切れている場合: gh auth login を実行）
+echo *** ERROR. See messages above. ***
+echo (if gh login expired: run  gh auth login)
 echo.
 pause
 exit /b 1

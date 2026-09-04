@@ -1,11 +1,11 @@
 @echo off
-chcp 65001 >nul
 setlocal
 rem ============================================================
-rem  価格調査ソフト  ---  GitHub 公開サイト（スマホ版）へ反映
-rem  ダブルクリックすると、このフォルダの内容を GitHub(kakaku-chousa-app)
-rem  へ push し、公開サイトを更新します。
-rem  ※ 自動保存/ _backup/ *.json は .gitignore で除外＝データは公開されません
+rem  Kakaku-Chousa Soft --- push updates to the public site (GitHub Pages)
+rem  Double-click: git add / commit / push. The site updates in a few minutes.
+rem  NOTE: jidou-hozon/, _backup/, *.json are excluded by .gitignore
+rem        so NO data is published.
+rem  (ASCII only: Japanese text in a .bat breaks cmd parsing.)
 rem ============================================================
 
 set "GIT=C:\Program Files\Git\cmd\git.exe"
@@ -14,28 +14,35 @@ if not exist "%GIT%" set "GIT=git"
 cd /d "%~dp0"
 
 echo.
-echo === 変更をGitHubへ反映します ===
-echo フォルダ: %cd%
+echo === pushing changes to GitHub ===
+echo folder: %cd%
 echo.
 
 "%GIT%" add -A
 if errorlevel 1 goto err
 
+"%GIT%" diff --cached --name-only | findstr /I /R "\.json$ _backup \.zip$" >nul
+if not errorlevel 1 (
+  echo *** DATA FILE DETECTED. ABORT. Check .gitignore ***
+  pause
+  exit /b 1
+)
+
 for /f "tokens=1-5 delims=/: " %%a in ("%date% %time%") do set "STAMP=%%a-%%b-%%c %%d:%%e"
-"%GIT%" commit -m "アプリ更新 %STAMP%"
+"%GIT%" -c user.name=shima9845181 -c user.email=shima9845181@gmail.com commit -m "app update %STAMP%"
 if errorlevel 1 (
   echo.
-  echo 反映する変更がありませんでした（またはコミットをスキップしました）。
+  echo (nothing to commit - pushing anyway)
 )
 
 echo.
-echo === push 中 ===
+echo === push ===
 "%GIT%" push
 if errorlevel 1 goto err
 
 echo.
 echo ============================================================
-echo  完了しました。数分で公開サイトに反映されます:
+echo  DONE. The site updates in a few minutes:
 echo  https://shima9845181.github.io/kakaku-chousa-app/
 echo ============================================================
 echo.
@@ -44,8 +51,8 @@ exit /b 0
 
 :err
 echo.
-echo *** エラーが発生しました。上の表示をご確認ください。 ***
-echo （初回や認証切れの場合、GitHubのログインを求められることがあります）
+echo *** ERROR. See messages above. ***
+echo (first run or expired login: GitHub may ask you to sign in)
 echo.
 pause
 exit /b 1
