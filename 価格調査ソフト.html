@@ -298,6 +298,11 @@ const caseHasContent = (c) => !!(c && ((c.name || "").trim() || (c.rows || []).s
 const KEY_GENS = "kakaku_saved_backups";   // IDB内ローリング世代バックアップ（案件一覧・最大10世代）
 const KEY_DELETED = "kakaku_deleted";      // 削除済み案件の墓石（世代復旧で復活させない）
 const FS_HANDLE_KEY = "fsBackupHandle";    // 自動保存先(File System Access)ハンドルのIDBキー
+const ZAIRYO_HANDLE_KEY = "zairyoFileHandle";   // 材料マスタ.xlsx を紐づけて自動更新するためのファイルハンドル
+const MPACK_HANDLE_KEY = "masterPackHandle";    // マスタ配信ファイル（スマホ・別PC用）の書き出し先ハンドル
+// 任意キーで生ハンドルを保存/取得（window.storageは文字列前提のため専用）
+function idbRawSet(key, v) { return new Promise((res) => { const r = indexedDB.open("kakaku_store", 1); r.onupgradeneeded = () => { try { r.result.createObjectStore("kv"); } catch (e) {} }; r.onsuccess = () => { const db = r.result; try { const tx = db.transaction("kv", "readwrite"); tx.objectStore("kv").put(v, key); tx.oncomplete = () => { db.close(); res(true); }; tx.onerror = () => { db.close(); res(false); }; } catch (e) { db.close(); res(false); } }; r.onerror = () => res(false); }); }
+function idbRawGet(key) { return new Promise((res) => { const r = indexedDB.open("kakaku_store", 1); r.onupgradeneeded = () => { try { r.result.createObjectStore("kv"); } catch (e) {} }; r.onsuccess = () => { const db = r.result; try { const tx = db.transaction("kv", "readonly"); const g = tx.objectStore("kv").get(key); g.onsuccess = () => { db.close(); res(g.result || null); }; g.onerror = () => { db.close(); res(null); }; } catch (e) { db.close(); res(null); } }; r.onerror = () => res(null); }); }
 const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
 const readDeleted = () => { try { const d = JSON.parse(localStorage.getItem(KEY_DELETED) || "{}"); return d && typeof d === "object" ? d : {}; } catch (e) { return {}; } };
 const markDeleted = (id) => { const d = readDeleted(); d[id] = Date.now(); const ks = Object.keys(d); if (ks.length > 300) { ks.sort((a, b) => d[a] - d[b]).slice(0, ks.length - 300).forEach((k) => delete d[k]); } lsSet(KEY_DELETED, JSON.stringify(d)); };
@@ -374,7 +379,7 @@ function parseZairyoXlsx(arrayBuffer, fileName) {
       });
     }
   }
-  return { items, history, importedAt: new Date().toLocaleString("ja-JP"), fileName: fileName || "" };
+  return { items, history, importedAt: new Date().toLocaleString("ja-JP"), fileName: fileName || "", lastMod: 0 };
 }
 
 // ================= 見積依頼書 Excel 出力（ExcelJS） =================
@@ -1216,12 +1221,12 @@ function ListTab({ cases, onOpen, onDup, onDel }) {
 }
 
 // ================= 設定タブ =================
-function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onReloadSekisan, onImportZairyo, onExportAll, onImportAll, fs, lastBackup, gens, onSetupFs, onEnableFs, onFsWriteNow, onRestoreHandle, onRestorePicker, onRecoverGens }) {
+function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onReloadSekisan, onImportZairyo, onExportAll, onImportAll, fs, lastBackup, gens, onSetupFs, onEnableFs, onFsWriteNow, onRestoreHandle, onRestorePicker, onRecoverGens, zWatch, mpack, onSetupZairyoWatch, onCheckZairyo, onSetupMpack, onWriteMpack, onExportMpack, onImportMpack }) {
   const upC = (k, v) => setSettings((s) => ({ ...s, company: { ...s.company, [k]: v } }));
   const upLink = (i, k, v) => setSettings((s) => { const links = s.links.slice(); links[i] = { ...links[i], [k]: v }; return { ...s, links }; });
   const upPat = (i, k, v) => setSettings((s) => { const ps = (s.urlPatterns || []).slice(); ps[i] = { ...ps[i], [k]: v }; return { ...s, urlPatterns: ps }; });
   const inp = "w-full border border-slate-300 rounded px-2 py-1 text-sm";
-  const fileRef = useRef(null); const bakRef = useRef(null);
+  const fileRef = useRef(null); const bakRef = useRef(null); const mpRef = useRef(null);
   return (
     <div className="space-y-3">
       <Card title="📡 データの状態">
@@ -1233,20 +1238,46 @@ function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onR
                 ? <div className="text-sm text-emerald-700">📱 スナップショット {sekisan.master.length.toLocaleString()} 件を使用中 <span className="text-xs text-slate-400">（PCの見積ソフト {sekisan.at || (sekisan.ts ? new Date(sekisan.ts).toLocaleString("ja-JP") : "")} 時点。PCのバックアップを復元すると更新されます）</span></div>
                 : <div className="text-sm text-emerald-700">✅ {sekisan.master.length.toLocaleString()} 件を読込中{sekisan.ts ? <span className="text-xs text-slate-400">（見積ソフト最終保存: {new Date(sekisan.ts).toLocaleString("ja-JP")}）</span> : null}</div>)
               : <div className="text-sm text-rose-600">⚠ 読み込めません：{sekisan.reason}<div className="text-xs text-slate-500 mt-0.5">スマホ・別PCの場合は、PCで書き出したバックアップを「バックアップから復元」すると見積マスタも入ります。</div></div>}
-            <div className="text-xs text-slate-400 mt-1">このソフトは見積ソフトのデータを読むだけで、一切書き込みません。マスタを更新した後は「再読込」してください。</div>
-            <div className="mt-1.5"><Btn onClick={onReloadSekisan}>🔄 再読込</Btn></div>
+            <div className="text-xs text-slate-400 mt-1">このソフトは見積ソフトのデータを読むだけで、一切書き込みません。<b>見積ソフトで仕入単価を変えると自動で追随します</b>（起動時・この画面に戻ったとき・10分ごとに読み直し）。</div>
+            <div className="mt-1.5"><Btn onClick={onReloadSekisan}>🔄 今すぐ再読込</Btn></div>
           </div>
           <div className="border border-slate-200 rounded p-2.5">
             <div className="font-semibold text-sm mb-1">材料マスタ.xlsx（仕入実績・単価履歴・定価・仕入先）</div>
             {zairyo.items && zairyo.items.length
               ? <div className="text-sm text-emerald-700">✅ {zairyo.items.length} 品目・履歴 {(zairyo.history || []).length} 行 <span className="text-xs text-slate-400">（取込: {zairyo.importedAt}{zairyo.fileName ? " / " + zairyo.fileName : ""}）</span></div>
               : <div className="text-sm text-amber-600">未取込です。「取込」で 積算ソフト\材料データ\材料マスタ.xlsx を選んでください。</div>}
-            <div className="text-xs text-slate-400 mt-1">材料マスタ.xlsxが月次更新されたら、ここで再取込してください（丸ごと置き換え・元のxlsxは変更しません）。</div>
-            <div className="mt-1.5">
-              <Btn variant="primary" onClick={() => fileRef.current && fileRef.current.click()}>📥 材料マスタ.xlsxを取込</Btn>
+            {zWatch.name
+              ? (zWatch.ready
+                ? <div className="text-sm text-emerald-700 mt-0.5">🔗 自動更新：有効（{zWatch.name}）<span className="text-xs text-slate-400">{zWatch.checkedAt ? "／最終確認 " + new Date(zWatch.checkedAt).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }) : ""}</span></div>
+                : <div className="text-sm text-amber-600 mt-0.5">⚠ 自動更新：許可が切れています（{zWatch.name}）→「今すぐ確認」を押すと再許可できます</div>)
+              : <div className="text-sm text-slate-500 mt-0.5">🔗 自動更新：未設定（ファイルを紐づけると、月次更新を自動で取り込みます）</div>}
+            <div className="text-xs text-slate-400 mt-1">紐づけると、<b>材料マスタ.xlsxが更新されるたびに自動で取り込みます</b>（起動時・この画面に戻ったとき・10分ごとに更新日時を確認）。元のxlsxは変更しません。</div>
+            <div className="mt-1.5 flex gap-1.5 flex-wrap">
+              <Btn variant="primary" onClick={onSetupZairyoWatch}>🔗 材料マスタ.xlsxを紐づけて自動更新</Btn>
+              <Btn onClick={() => onCheckZairyo(true)} disabled={!zWatch.name}>🔄 今すぐ確認</Btn>
+              <Btn onClick={() => fileRef.current && fileRef.current.click()}>📥 1回だけ取込</Btn>
               <input ref={fileRef} type="file" accept=".xlsx" className="hidden" onChange={(e) => { if (e.target.files[0]) onImportZairyo(e.target.files[0]); e.target.value = ""; }} />
             </div>
           </div>
+        </div>
+      </Card>
+
+      <Card title="🔄 マスタの配信（スマホ・別PCへ最新の仕入単価を渡す）">
+        {mpack.name
+          ? (mpack.ready
+            ? <div className="text-sm text-emerald-700">✅ 配信ファイル：{mpack.name}{mpack.lastWrite ? <span className="text-xs text-slate-400">（最終書き出し {new Date(mpack.lastWrite).toLocaleString("ja-JP")}）</span> : null}</div>
+            : <div className="text-sm text-amber-600">⚠ 配信ファイルの権限が切れています（{mpack.name}）→「今すぐ書き出し」で再許可できます</div>)
+          : <div className="text-sm text-slate-500">未設定です。Googleドライブ内にファイルを1つ決めておくと、マスタが変わるたびに自動で最新が書き出されます。</div>}
+        <div className="flex gap-1.5 flex-wrap mt-1.5">
+          <Btn variant="primary" onClick={onSetupMpack}>📂 配信ファイルを{mpack.name ? "変更" : "設定"}</Btn>
+          <Btn onClick={onWriteMpack} disabled={!mpack.name}>💾 今すぐ配信ファイルへ書き出し</Btn>
+          <Btn onClick={onExportMpack}>📤 マスタを書き出し（1回）</Btn>
+          <Btn variant="primary" onClick={() => mpRef.current && mpRef.current.click()}>📥 マスタだけ更新（受け取る側）</Btn>
+          <input ref={mpRef} type="file" accept=".json" data-role="master-pack" className="hidden" onChange={(e) => { if (e.target.files[0]) onImportMpack(e.target.files[0]); e.target.value = ""; }} />
+        </div>
+        <div className="text-xs text-slate-400 mt-1">
+          配信ファイルには<b>マスタ（材料マスタ・見積マスタ）だけ</b>が入ります（案件・ネット価格・会社情報は入りません）。<br />
+          受け取る側で「📥 マスタだけ更新」を押すと、<b>その端末の案件やネット価格はそのままで、マスタだけが最新に</b>なります。全データバックアップのJSONを選んでも、マスタ部分だけ取り出して更新します。
         </div>
       </Card>
 
@@ -1262,6 +1293,7 @@ function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onR
             <div><b>データの受け渡し</b>（端末ごとに保存されるため、バックアップJSONで手動同期＝写真管理アプリと同じ）：</div>
             <div>① PC：自動バックアップの保存先をGoogleドライブ内にしておく（または「全データを書き出し」でJSONをドライブへ）</div>
             <div>② スマホ：公開URLを開く → 設定 → 「バックアップから復元」 → ドライブのJSONを選ぶ（見積マスタのスナップショットも一緒に入ります）</div>
+            <div className="text-cyan-800">②' 2回目以降は「<b>📥 マスタだけ更新</b>」（上のカード）でドライブの配信ファイルを選ぶのが安全です。スマホで調べたネット価格や案件を消さずに、仕入単価だけ最新にできます。</div>
             <div>③ スマホで調べたネット価格などをPCに戻すときは、スマホで「全データを書き出し」→ PCで「バックアップから復元」</div>
             <div className="text-amber-700">※復元は全置き換え（後から復元した側の内容になります）。両方で編集した場合はどちらかを先に書き出してください。</div>
           </div>
@@ -1364,7 +1396,7 @@ function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onR
           <div className="flex gap-1.5 flex-wrap">
             <Btn onClick={onExportAll}>💾 全データを書き出し（JSON）</Btn>
             <Btn onClick={() => bakRef.current && bakRef.current.click()}>📂 バックアップから復元</Btn>
-            <input ref={bakRef} type="file" accept=".json" className="hidden" onChange={(e) => { if (e.target.files[0]) onImportAll(e.target.files[0]); e.target.value = ""; }} />
+            <input ref={bakRef} type="file" accept=".json" data-role="backup-restore" className="hidden" onChange={(e) => { if (e.target.files[0]) onImportAll(e.target.files[0]); e.target.value = ""; }} />
             {lastBackup ? <span className="text-xs text-slate-400 self-center">最終書き出し：{new Date(lastBackup).toLocaleString("ja-JP")}</span> : null}
           </div>
           <div className="text-xs text-slate-400 mt-1">案件・設定・取込済み材料マスタを1つのJSONに書き出します（自動保存と同じ内容）。</div>
@@ -1422,6 +1454,12 @@ function App() {
   const [docs, setDocs] = useState({});          // 品目キー→資料リンク配列（カタログ/仕様書/姿図）
   const [market, setMarket] = useState({});      // ネット価格DB：品目キー→{model,name,maker,unit,adoptedId,entries[]}
   const [priceItem, setPriceItem] = useState(null); // {item, onAdopt}
+  // --- マスタの自動追随（材料マスタ.xlsx の監視／マスタ配信ファイル） ---
+  const zairyoHandleRef = useRef(null);
+  const [zWatch, setZWatch] = useState({ name: "", ready: false, checkedAt: 0 });
+  const mpackHandleRef = useRef(null);
+  const [mpack, setMpack] = useState({ name: "", ready: false, lastWrite: 0 });
+  const [updateNotice, setUpdateNotice] = useState(null); // マスタが自動更新されたときの通知
   const [docsItem, setDocsItem] = useState(null);
   const [histItem, setHistItem] = useState(null);
   const [preview, setPreview] = useState(false);
@@ -1527,6 +1565,13 @@ function App() {
         if (dk && dk.value) { try { const d = JSON.parse(dk.value); if (d && typeof d === "object") setDocs(d); } catch (e) {} }
         const mk = await window.storage.get(KEY_MARKET);
         if (mk && mk.value) { try { const d = JSON.parse(mk.value); if (d && typeof d === "object") setMarket(d); } catch (e) {} }
+        // 材料マスタ.xlsx の紐づけ／マスタ配信ファイルのハンドルを復元（権限は後で確認）
+        try {
+          const zh = await idbRawGet(ZAIRYO_HANDLE_KEY);
+          if (zh) { zairyoHandleRef.current = zh; let p = "prompt"; try { p = await zh.queryPermission({ mode: "read" }); } catch (e) {} setZWatch({ name: zh.name || "材料マスタ.xlsx", ready: p === "granted", checkedAt: 0 }); }
+          const mh = await idbRawGet(MPACK_HANDLE_KEY);
+          if (mh) { mpackHandleRef.current = mh; let p2 = "prompt"; try { p2 = await mh.queryPermission({ mode: "readwrite" }); } catch (e) {} setMpack({ name: mh.name || "", ready: p2 === "granted", lastWrite: parseInt(localStorage.getItem("kakaku_mpack_last") || "0", 10) || 0 }); }
+        } catch (e) {}
         await loadSekisan();
       } finally { setLoaded(true); }
     })();
@@ -1675,15 +1720,128 @@ function App() {
   };
 
   // ---- 材料マスタ取込 ----
-  const importZairyo = async (file) => {
-    try {
-      const buf = await file.arrayBuffer();
-      const d = parseZairyoXlsx(buf, file.name);
-      setZairyo(d);
-      await window.storage.set(KEY_ZAIRYO, JSON.stringify(d));
-      alert("材料マスタを取り込みました：" + d.items.length + " 品目・履歴 " + d.history.length + " 行");
-    } catch (e) { alert("取込に失敗しました：" + ((e && e.message) || e)); }
+  // 材料マスタ.xlsx を取り込む（silent=自動更新時はアラートを出さずバナーで知らせる）
+  const doImportZairyo = async (file, silent) => {
+    const buf = await file.arrayBuffer();
+    const d = parseZairyoXlsx(buf, file.name);
+    d.lastMod = file.lastModified || 0;
+    setZairyo(d);
+    await window.storage.set(KEY_ZAIRYO, JSON.stringify(d));
+    if (silent) setUpdateNotice({ msg: "材料マスタの更新を取り込みました（" + d.items.length + " 品目・履歴 " + d.history.length + " 行）", at: new Date().toLocaleString("ja-JP") });
+    else alert("材料マスタを取り込みました：" + d.items.length + " 品目・履歴 " + d.history.length + " 行");
+    return d;
   };
+  const importZairyo = async (file) => { try { await doImportZairyo(file, false); } catch (e) { alert("取込に失敗しました：" + ((e && e.message) || e)); } };
+  // 材料マスタ.xlsx を紐づけ（以後は更新日時を見て自動で取り込む）
+  const setupZairyoWatch = async () => {
+    if (typeof window.showOpenFilePicker !== "function") { alert("このブラウザはファイルの紐づけに非対応です（Chrome / Edge を推奨）。「材料マスタ.xlsxを取込」で都度取り込んでください。"); return; }
+    try {
+      const [h] = await window.showOpenFilePicker({ types: [{ description: "Excel", accept: { "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"] } }] });
+      zairyoHandleRef.current = h;
+      await idbRawSet(ZAIRYO_HANDLE_KEY, h);
+      const f = await h.getFile();
+      await doImportZairyo(f, false);
+      setZWatch({ name: h.name, ready: true, checkedAt: Date.now() });
+      alert("材料マスタを紐づけました。以後このファイルが更新されると、起動時や画面に戻ったときに自動で取り込みます。");
+    } catch (e) { if (e && e.name !== "AbortError") alert("紐づけに失敗しました：" + ((e && e.message) || e)); }
+  };
+  // 紐づけたファイルの更新日時を見て、変わっていれば自動再取込
+  const checkZairyoUpdate = useCallback(async (manual) => {
+    const h = zairyoHandleRef.current;
+    if (!h) { if (manual) setupZairyoWatch(); return; }
+    try {
+      let p = "prompt"; try { p = await h.queryPermission({ mode: "read" }); } catch (e) {}
+      if (p !== "granted" && manual) { try { p = await h.requestPermission({ mode: "read" }); } catch (e) {} }
+      if (p !== "granted") { setZWatch((w) => ({ ...w, ready: false })); if (manual) alert("読み取りの許可が必要です。もう一度お試しください。"); return; }
+      const f = await h.getFile();
+      const cur = (latestRef.current.zairyo && latestRef.current.zairyo.lastMod) || 0;
+      if ((f.lastModified || 0) !== cur) await doImportZairyo(f, true);
+      setZWatch({ name: h.name, ready: true, checkedAt: Date.now() });
+    } catch (e) { setZWatch((w) => ({ ...w, ready: false })); if (manual) alert("確認に失敗しました：" + ((e && e.message) || e)); }
+  }, []);
+  // ===== マスタ配信（スマホ・別PCへ渡す。案件やネット価格は含めない） =====
+  const buildMasterPack = () => {
+    const L = latestRef.current;
+    const sk = L.sekisan;
+    return { version: 1, app: "kakaku_master_pack", savedAt: new Date().toLocaleString("ja-JP"), ts: Date.now(),
+      zairyo: L.zairyo && L.zairyo.items && L.zairyo.items.length ? L.zairyo : undefined,
+      sekisanSnap: (sk && sk.ok && sk.master && sk.master.length) ? { master: sk.master, ts: sk.ts || 0, at: sk.snap ? (sk.at || "") : new Date().toLocaleString("ja-JP") } : undefined };
+  };
+  const masterPackEmpty = (p) => !((p.zairyo && p.zairyo.items && p.zairyo.items.length) || (p.sekisanSnap && p.sekisanSnap.master && p.sekisanSnap.master.length));
+  const exportMasterPack = () => {
+    const p = buildMasterPack();
+    if (masterPackEmpty(p)) { alert("配信できるマスタがありません（材料マスタの取込、または見積ソフトの読込が必要です）。"); return; }
+    downloadBlob(new Blob([JSON.stringify(p)], { type: "application/json" }), "価格調査_マスタ_" + ymdStr() + ".json");
+  };
+  const writeMasterPack = async (reason) => {
+    const h = mpackHandleRef.current; if (!h) return;
+    try {
+      const p = buildMasterPack();
+      if (masterPackEmpty(p)) { if (reason === "manual") alert("配信できるマスタがありません。"); return; }
+      const w = await h.createWritable(); await w.write(JSON.stringify(p)); await w.close();
+      const now = Date.now(); setMpack({ name: h.name, ready: true, lastWrite: now }); lsSet("kakaku_mpack_last", String(now));
+    } catch (e) { setMpack((m) => ({ ...m, ready: false })); if (reason === "manual") alert("マスタ配信ファイルの書き出しに失敗しました：" + ((e && e.message) || e)); }
+  };
+  const setupMasterPackTarget = async () => {
+    if (typeof window.showSaveFilePicker !== "function") { alert("このブラウザは非対応です。「マスタを書き出し」でファイルを保存してください。"); return; }
+    try {
+      const h = await window.showSaveFilePicker({ suggestedName: "価格調査_マスタ配信.json", types: [{ description: "JSON", accept: { "application/json": [".json"] } }] });
+      mpackHandleRef.current = h; await idbRawSet(MPACK_HANDLE_KEY, h);
+      setMpack({ name: h.name, ready: true, lastWrite: 0 });
+      await writeMasterPack("manual");
+      alert("マスタ配信ファイルを設定しました。マスタが変わるたびに、このファイルへ自動で書き出します。\n※Googleドライブ内に置けば、スマホの「マスタだけ更新」から読み込めます。");
+    } catch (e) { if (e && e.name !== "AbortError") alert("設定に失敗しました：" + ((e && e.message) || e)); }
+  };
+  // マスタだけを更新（案件・ネット価格・設定は保持）。全データバックアップからマスタ部分だけ取り出すことも可
+  const importMasterPack = (file) => {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      let d; try { d = JSON.parse(e.target.result); } catch { alert("ファイルの読み込みに失敗しました。"); return; }
+      const isPack = d && d.app === "kakaku_master_pack";
+      const isFull = d && d.app === "kakaku_chousa_full";
+      if (!isPack && !isFull) { alert("マスタ配信ファイル（または全データバックアップ）ではありません。"); return; }
+      const zr = d.zairyo && d.zairyo.items && d.zairyo.items.length ? d.zairyo : null;
+      const sn = d.sekisanSnap && d.sekisanSnap.master && d.sekisanSnap.master.length ? d.sekisanSnap : null;
+      if (!zr && !sn) { alert("このファイルにマスタが含まれていません。"); return; }
+      const parts = [zr ? "材料マスタ " + zr.items.length + " 品目" : "", sn ? "見積マスタ " + sn.master.length + " 件" : ""].filter(Boolean).join("／");
+      if (!window.confirm("マスタだけを更新します（案件・ネット価格・設定はそのまま）。\n\n" + parts + "\n\nよろしいですか？")) return;
+      try {
+        if (zr) { await window.storage.set(KEY_ZAIRYO, JSON.stringify(zr)); setZairyo(zr); }
+        if (sn) { await window.storage.set(KEY_SEKISAN_SNAP, JSON.stringify(sn)); if (!(latestRef.current.sekisan && latestRef.current.sekisan.ok && !latestRef.current.sekisan.snap)) setSekisan({ ok: true, master: sn.master, ts: sn.ts, snap: true, at: sn.at || "" }); }
+        setUpdateNotice({ msg: "マスタを更新しました（" + parts + "）", at: new Date().toLocaleString("ja-JP") });
+      } catch (er) { alert("更新に失敗しました：" + er); }
+    };
+    reader.readAsText(file);
+  };
+  // 見積ソフトのマスタ（仕入）を自動追随：画面に戻ったとき＋10分ごとに読み直し、変化があれば知らせる
+  useEffect(() => {
+    if (!loaded) return;
+    const tick = async () => {
+      try {
+        const r = await window.readSekisanMaster();
+        if (!r.ok) return; // スマホ等（直読不可）はスナップショットを保持
+        const prev = latestRef.current.sekisan || {};
+        if (prev.ok && !prev.snap && (prev.ts || 0) === (r.ts || 0) && (prev.master || []).length === r.master.length) return;
+        setSekisan({ ok: true, master: r.master, ts: r.ts, snap: false });
+        if (prev.ok) setUpdateNotice({ msg: "見積ソフトのマスタ（仕入単価）の更新を読み込みました（" + r.master.length.toLocaleString() + " 件）", at: new Date().toLocaleString("ja-JP") });
+      } catch (e) {}
+    };
+    const onVis = () => { if (document.visibilityState === "visible") { tick(); checkZairyoUpdate(false); } };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onVis);
+    const id = setInterval(() => { tick(); checkZairyoUpdate(false); }, 10 * 60 * 1000);
+    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); clearInterval(id); };
+  }, [loaded, checkZairyoUpdate]);
+  // 起動直後に一度、紐づけた材料マスタ.xlsx の更新を確認
+  useEffect(() => { if (loaded) checkZairyoUpdate(false); }, [loaded, checkZairyoUpdate]);
+  // マスタが変わったら配信ファイルへ自動書き出し（設定済みのときだけ）
+  useEffect(() => {
+    if (!loaded || !mpack.ready) return;
+    const t = setTimeout(() => { writeMasterPack("auto"); }, 3000);
+    return () => clearTimeout(t);
+  }, [zairyo, sekisan.master.length, sekisan.ts, mpack.ready, loaded]);
+
 
   // ---- 案件操作 ----
   const flash = (msg, set) => { set(msg); setTimeout(() => set(""), 2000); };
@@ -1832,6 +1990,12 @@ function App() {
           <Btn variant="ghost" onClick={() => setAutoRestored(null)}>✕</Btn>
         </div>
       )}
+      {updateNotice && (
+        <div className="mb-3 bg-cyan-50 border border-cyan-300 text-cyan-900 text-sm rounded px-3 py-2 flex items-center gap-2 flex-wrap">
+          🔄 {updateNotice.msg}<span className="text-xs text-slate-500">{updateNotice.at}</span>
+          <Btn variant="ghost" onClick={() => setUpdateNotice(null)}>✕</Btn>
+        </div>
+      )}
       {recoveryNotice && (
         <div className="mb-3 bg-sky-50 border border-sky-300 text-sky-800 text-sm rounded px-3 py-2 flex items-center gap-2 flex-wrap">
           ♻ 世代バックアップから案件 {recoveryNotice.recovered} 件を復旧しました。
@@ -1847,6 +2011,8 @@ function App() {
       {tab === "list" && <ListTab cases={cases} onOpen={openCase} onDup={dupCase} onDel={delCase} />}
       {tab === "settings" && <SettingsTab settings={settings} setSettings={setSettings} sekisan={sekisan} zairyo={zairyo} docs={docs} market={market}
         onReloadSekisan={loadSekisan} onImportZairyo={importZairyo} onExportAll={exportAll} onImportAll={importAll}
+        zWatch={zWatch} mpack={mpack} onSetupZairyoWatch={setupZairyoWatch} onCheckZairyo={checkZairyoUpdate}
+        onSetupMpack={setupMasterPackTarget} onWriteMpack={() => writeMasterPack("manual")} onExportMpack={exportMasterPack} onImportMpack={importMasterPack}
         fs={{ supported: fsSupported, name: fsName, ready: fsReady, lastWrite: fsLastWrite }} lastBackup={lastBackup} gens={gens}
         onSetupFs={setupAutoSaveTarget} onEnableFs={enableAutoSave} onFsWriteNow={() => fsWrite("manual")}
         onRestoreHandle={restoreFromHandle} onRestorePicker={restoreFromPicker} onRecoverGens={recoverFromGens} />}
