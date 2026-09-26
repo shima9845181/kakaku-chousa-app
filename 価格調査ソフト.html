@@ -10,16 +10,22 @@
 <link rel="apple-touch-icon" href="icon-192.png" />
 <title>価格調査ソフト</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%230e7490'/%3E%3Ctext x='32' y='40' font-size='30' text-anchor='middle' fill='%23fff' font-family='sans-serif'%3E%C2%A5%3C/text%3E%3Ccircle cx='44' cy='44' r='11' fill='none' stroke='%23fff' stroke-width='4'/%3E%3Cline x1='51' y1='51' x2='60' y2='60' stroke='%23fff' stroke-width='5' stroke-linecap='round'/%3E%3C/svg%3E" />
-<script src="https://cdn.tailwindcss.com"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
+<script src="/kyoutsuu/vault.js"></script>
+<script>window.Vault && (window.Vault.app = "kakaku");</script>
+<!-- メーカー別の仕入掛率（商売の数字なので公開しない別ファイル。公開版には無く、読めなくても動く） -->
+<script src="maker_rates_local.js"></script>
+<script src="lib/tailwind.js"></script>
+<script src="lib/react.production.min.js"></script>
+<script src="lib/react-dom.production.min.js"></script>
+<script src="lib/babel.min.js"></script>
+<script src="lib/xlsx.full.min.js"></script>
+<script src="lib/exceljs.min.js"></script>
 <style>
   body { font-family: "Segoe UI", "Yu Gothic UI", "Yu Gothic", system-ui, sans-serif; }
   input[type=number]::-webkit-outer-spin-button, input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
-  .tbl th, .tbl td { border: 1px solid #cbd5e1; padding: 3px 6px; }
+  .tbl th, .tbl td { border: 1px solid #cbd5e1; padding: 2px 6px; }
+  /* 画面いっぱいに使う。広い画面ほど1行に入る情報が増え、下へのスクロールが減る（2026-09-18） */
+  .tbl { width: 100%; }
   .tbl th { background: #f1f5f9; font-weight: 600; }
   /* ===== 印刷（見積依頼書のみ出す。position:fixedは複製バグがあるためabsolute） ===== */
   .paper { width: 190mm; min-height: 200mm; background: #fff; margin: 0 auto; padding: 12mm 10mm; color: #000; }
@@ -117,6 +123,7 @@ const KEY_ZAIRYO = "kakaku_zairyo_v1"; // 材料マスタ.xlsx取込データ（
 const KEY_DOCS = "kakaku_docs_v1";     // 品目ごとの資料（カタログ/仕様書/姿図）リンク集
 const KEY_MARKET = "kakaku_market_v1"; // ネット価格DB（型番→調べた市場価格の履歴と採用価格）
 const KEY_SEKISAN_SNAP = "kakaku_sekisan_snap_v1"; // 見積マスタのスナップショット（直読できないスマホ等で使う。バックアップから復元時に保存）
+const KEY_DECLINE = "kakaku_decline_v1";        // 「この行は取り込まない」と決めた覚え（中身が変わるまで出さない）
 const PUBLIC_URL = "https://shima9845181.github.io/kakaku-chousa-app/"; // スマホ用の公開URL（GitHub Pages）
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
 const num = (v) => { const n = parseFloat(v); return isNaN(n) ? 0 : n; };
@@ -141,9 +148,9 @@ const DEFAULT_LINKS = [
 ];
 // ===== まとめて検索（PDF/画像/Excel/貼り付け から型番を拾う） =====
 // 重いライブラリは使うときだけ読み込む（起動を遅くしない）
-const LIB_PDF = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
-const LIB_PDF_WORKER = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-const LIB_TESS = "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.0.4/tesseract.min.js";
+const LIB_PDF = "lib/pdf.min.js";
+const LIB_PDF_WORKER = "lib/pdf.worker.min.js";
+const LIB_TESS = "lib/tesseract/tesseract.min.js";
 function loadScript(src) {
   return new Promise((res, rej) => {
     if (document.querySelector('script[data-lib="' + src + '"]')) { res(); return; }
@@ -154,6 +161,8 @@ function loadScript(src) {
   });
 }
 async function ensurePdfLib() { if (!window.pdfjsLib) await loadScript(LIB_PDF); try { window.pdfjsLib.GlobalWorkerOptions.workerSrc = LIB_PDF_WORKER; } catch (e) {} return window.pdfjsLib; }
+// Tesseract(OCR)の資材: localhost/https は同梱 lib/tesseract、file:// は従来(CDN既定)。
+window.__tessLocalOpts = function(){ try { if (location.protocol === "file:") return {}; var b = new URL("lib/tesseract/", document.baseURI).href; return { workerPath: b + "worker.min.js", corePath: b, langPath: b + "lang" }; } catch (e) { return {}; } };
 async function ensureTessLib() { if (!window.Tesseract) await loadScript(LIB_TESS); return window.Tesseract; }
 
 // 型番らしい語だけを拾う（英数字＋ハイフン等・数字と英字の両方を含む。日本語混じり・純数値・日付・金額は除外）
@@ -178,6 +187,14 @@ function extractModels(text) {
 }
 // OCRの読み違い（O↔0, I/l↔1, B↔8, S↔5, Z↔2）を吸収した比較用キー
 const foldOcr = (v) => norm(v).replace(/[o]/g, "0").replace(/[il]/g, "1").replace(/b/g, "8").replace(/s/g, "5").replace(/z/g, "2");
+// ===== 単価の出どころ（2026-09-26 追加）=====
+// 材料マスタの単価が『業者の見積・提示価格』か『実際に買った請求・納品の価格』かを分けて持つ。
+// 手掛かりは備考(note)の書き出しだけなので、そこから判定して srcType に固定する（備考を直しても消えない）。
+const SRC_TYPES = { '請求': { label: '請求', cls: 'bg-emerald-100 text-emerald-800', title: '実際に買った価格（請求・納品）' }, '見積': { label: '見積', cls: 'bg-amber-100 text-amber-800', title: '業者の見積・提示価格。まだ買っていないので実際の仕入より高いことが多い' }, 'ネット': { label: 'ネット', cls: 'bg-sky-100 text-sky-800', title: 'ネットで調べた市場価格' }, '不明': { label: '不明', cls: 'bg-slate-100 text-slate-500', title: '出どころが記録されていない（見積か請求か分からない）' } };
+function srcTypeOf(note, src) { const sv = String(src == null ? '' : src).trim(); if (SRC_TYPES[sv]) return sv; const s = String(src == null ? '' : src) + ' ' + String(note == null ? '' : note); if (/NET価格|ネット価格|ネット調べ/.test(s)) return 'ネット'; if (/見積/.test(s)) return '見積'; if (/請求|納品|仕入実績/.test(s)) return '請求'; return '不明'; }
+function SrcBadge({ t }) { const d = SRC_TYPES[t] || SRC_TYPES['不明']; return <span className={'inline-block text-[11px] rounded px-1.5 py-0.5 ' + d.cls} title={d.title}>{d.label}</span>; }
+function zairyoWithSrc(z) { if (!z || typeof z !== 'object') return z; const items = (z.items || []).map((x) => (x && x.srcType ? x : { ...x, srcType: srcTypeOf(x && x.note, '') })); const history = (z.history || []).map((x) => (x && x.srcType ? x : { ...x, srcType: srcTypeOf('', (x && x.src) || '') })); return { ...z, items: items, history: history }; }
+function srcCounts(items) { const c = { '請求': 0, '見積': 0, 'ネット': 0, '不明': 0 }; (items || []).forEach((x) => { const t = (x && x.srcType) || '不明'; c[t] = (c[t] || 0) + 1; }); return c; }
 // 1件の検索語を社内データに照合。型番完全一致 → OCR補正一致 → 型番部分一致 → 品名一致 → 見積マスタ名称 の順
 // ネット価格DBの照合：型番キー完全一致 → OCR補正一致。採用価格（adoptedId、無ければ最新）を返す
 function marketAdopted(rec) { if (!rec || !rec.entries || !rec.entries.length) return null; return rec.entries.find((e) => e.id === rec.adoptedId) || rec.entries[0]; }
@@ -194,8 +211,8 @@ function marketLookup(term, market) {
 function matchInternal(term, zairyo, sekisan, market) {
   const k = norm(term); if (!k) return null;
   const zs = (zairyo && zairyo.items) || []; const ms = (sekisan && sekisan.master) || [];
-  const asZ = (x, via) => ({ via, src: "仕入実績", name: x.name, model: x.model, maker: x.maker, vendor: x.vendor, cat: x.cat, unit: x.unit, price: num(x.price), listPrice: x.listPrice, date: x.date });
-  const asM = (x, via) => ({ via, src: "見積マスタ", name: x.name, model: "", maker: "", vendor: "", cat: x.cat, unit: x.unit, price: num(x.mat), listPrice: "", date: x.editedAt || "" });
+  const asZ = (x, via) => ({ via, src: "仕入実績", name: x.name, model: x.model, maker: x.maker, vendor: x.vendor, cat: x.cat, unit: x.unit, price: num(x.price), listPrice: x.listPrice, date: x.date, srcType: x.srcType || srcTypeOf(x.note, "") });
+  const asM = (x, via) => ({ via, src: "見積マスタ", name: x.name, model: "", maker: "", vendor: "", cat: x.cat, unit: x.unit, price: num(x.mat), listPrice: "", date: x.editedAt || "", srcType: "不明" });
   let f = zs.filter((x) => norm(x.model) && norm(x.model) === k);
   if (f.length) return { ...asZ(f[0], "型番一致"), more: f.length - 1 };
   const fk = foldOcr(term);
@@ -235,28 +252,239 @@ const MAKER_SITES = [
   { name: "テンパール", match: ["テンパール", "tempearl"], site: "" },
   { name: "富士電機", match: ["富士電機", "fuji"], site: "" },
 ];
+// ===== メーカー判定と メーカー別 仕入掛率（見積ソフト・価格調査ソフトで同じもの。直すときは両方同じに直す）2026-09-19 =====
+// 区分＝掛率が違う単位。パナは 施設24%・住宅38%・非常灯23%、三菱は 換気扇32%・換気空調38%・エアコン16% と実績が分かれるので6つ
+const MAKER_KUBUN = ["施設照明", "住宅照明", "非常灯・誘導灯", "換気扇", "換気・空調", "エアコン", "ブレーカ", "分電盤・盤"];
+const MAKER_LIST = ["パナソニック", "三菱電機", "オーデリック", "コイズミ照明", "遠藤照明", "東芝ライテック", "大光電機",
+  "日東工業", "河村電器産業", "テンパール工業", "富士電機", "内外電機"];   // 2026-09-23 下5社＝ブレーカ・分電盤のメーカー
+// 型番の頭でメーカーと区分を決める。上から順に見て最初に当たったもの。
+//  ・京都府マニュアルの標準記号（LSS15-4-41 / LRS… 等）はメーカーではないので入れない
+//  ・X＋英字＋6桁＝オーデリック施設、X＋英字＋5桁＝コイズミ施設（両社とも X で始まるので桁数で分ける。外れたら手で直す）
+const MAKER_RULES = [
+  { maker: "パナソニック", kubun: "非常灯・誘導灯", re: /^(NNFB|NNCF|NNLF|FA\d|FK\d|FKK|FTS|NNFG)/ },
+  { maker: "パナソニック", kubun: "施設照明", re: /^(NNF|NNL|NNN|NNW|NNQ|NNY|NYY|NYS|NTN|NDN|NEL|NNM|NWP|NWS|NNC|NNJ|NNS|NLE|XLX|XLG|XFX|XDL|XND|XLE|XAS|XW\d|XY\d|XNW|XLF|XL[A-Z]|FSK|LDL|NN\d)/ },
+  { maker: "パナソニック", kubun: "住宅照明", re: /^(LGB|LGC|LGW|LGD|LGE|LGS|LGF|LSEB|LSEW|LGBZ|LGSB|LGWC|HH-)/ },
+  { maker: "パナソニック", kubun: "換気扇", re: /^(FY-|FV-|VB-|XFY|FYT)/ },
+  { maker: "パナソニック", kubun: "エアコン", re: /^(CS-|CU-|PA-P|XPA)/, cat: /エアコン|空調|冷暖/ },
+  // ── ブレーカ・分電盤（2026-09-23）。型番の頭で見分ける。材料マスタ.xlsx のメーカ欄で裏取りしたもの＝GE/NE/PN/CB=日東、NL=河村、BCWA=パナ
+  { maker: "三菱電機", kubun: "ブレーカ", re: /^(NF|NV)\d|^(BH|BV)-?[CKW]/ },           // NF63-CV(配線用) NV50-KC(漏電) BH-C/BV-C(分電盤用)
+  { maker: "日東工業", kubun: "ブレーカ", re: /^(GE|NE|GP|PN|CB|HE)\d/ },               // GE53CX(漏電) NE52CX(配線用) PN31TA CB31X
+  { maker: "河村電器産業", kubun: "ブレーカ", re: /^(NL|ZE)\d/ },                       // NL63E＝河村の自社MCB
+  { maker: "テンパール工業", kubun: "ブレーカ", re: /^GB-\d/ },                          // ハイフン必須。GB25＝ゴムブッシングを拾ってしまうため
+  { maker: "富士電機", kubun: "ブレーカ", re: /^BW\d/ },
+  { maker: "パナソニック", kubun: "分電盤・盤", re: /^(BQ[WREH]|BHW)/ },                 // BQWB＝住宅分電盤（スッキリ21）
+  { maker: "パナソニック", kubun: "ブレーカ", re: /^(BBW|BCW|BJS|BJW|BAW|BKW|BSH)/ },    // BJS(小型ELB) BCWA(サーキットブレーカ)
+  { maker: "内外電機", kubun: "分電盤・盤", re: /^(TAV|TLE|NLA)/ },
+  { maker: "パナソニック", kubun: "", re: /^(LDA|LDR|LDF|LDG|LDT|FL\d|FLR|FHF|FCL|FDL|EFA|WTF|WTP|WT\d|WN\d|BQ[A-Z]|BJ[A-Z]|BS[A-Z]|BH[A-Z])/ }, // ランプ・配線器具・盤＝メーカーだけ（照明の掛率は使わない）
+  { maker: "三菱電機", kubun: "非常灯・誘導灯", re: /^(KSH|KYH|KSC|KYC|EL-C\d|EL-DB|EL-LKB)/ },
+  { maker: "三菱電機", kubun: "施設照明", re: /^(MY-|EL-)/ },
+  { maker: "三菱電機", kubun: "換気扇", re: /^(VD-|VL-|EFG|BFS)/ },
+  { maker: "三菱電機", kubun: "換気扇", re: /^(V-\d|EX-|EF-|P-\d)/, cat: /換気|送風|ファン|空調|ロスナイ|給排/ },
+  { maker: "三菱電機", kubun: "換気・空調", re: /^(EWF|EWG|LGH|EWH)/ },
+  { maker: "三菱電機", kubun: "換気・空調", re: /^(W-\d|PS-\d|G-\d|K-\d|BF-|VF-|JF-|SF-)/, cat: /換気|送風|ファン|空調|ロスナイ|給排|シャッター|ガラリ|フード/ },
+  { maker: "三菱電機", kubun: "エアコン", re: /^(PUZ|PC-|PLZ|PEZ|PKZ|PMZ|PCZ|PAR|MDU|MDC|SUZ|MSZ|MLZ|MFZ|MXZ|PUHZ|PUMY)/ },
+  { maker: "オーデリック", kubun: "施設照明", re: /^X[A-Z]\d{6}/ },
+  { maker: "オーデリック", kubun: "住宅照明", re: /^O[LDBGSPWAXCETR]\d{3,}/ },
+  { maker: "コイズミ照明", kubun: "施設照明", re: /^X[A-Z]\d{5}(?!\d)/ },
+  { maker: "コイズミ照明", kubun: "住宅照明", re: /^A[BHUDPERSALTMW]\d{4,}/ },
+  { maker: "遠藤照明", kubun: "施設照明", re: /^(ER[A-Z]\d|EF[A-Z]\d|EN[A-Z]\d|EH[A-Z]\d|FAD|RB-\d|RX-\d|RA-\d|EE\d|EW\d|SXS|SXD)/ },
+  { maker: "東芝ライテック", kubun: "非常灯・誘導灯", re: /^(FBK|FBJ|LEDEM|LEKTJ)/ },
+  { maker: "東芝ライテック", kubun: "施設照明", re: /^(LEKT|LEKR|LEDD|LEDS|LEDG|LEDB|LEEM|LEET|LMT|LEK)/ },
+  { maker: "大光電機", kubun: "住宅照明", re: /^(DDL|DCL|DBK|DOL|DSY|DXL|DWP|DBL|DCH|DPN|DP-|LZ[A-Z]\d)/ },
+];
+// 品名・仕様の文字から型番らしい語を取り出して判定。無ければ null
+function detectMaker(text, cat) {
+  const s = String(text || "").normalize("NFKC").toUpperCase();
+  const c = String(cat || "");
+  const toks = s.split(/[\s,、，()（）\[\]【】\/／:：;；「」]+/)
+    .map((t) => (t.match(/^[A-Z0-9][A-Z0-9\-.]*/) || [""])[0])            // 英数字と - . だけの頭（LB40形→LB40、XU54382ｶｺｳ→XU54382）
+    .filter((t) => t.length >= 4 && /\d/.test(t) && /[A-Z]/.test(t));
+  for (const t of toks) { for (const r of MAKER_RULES) { if (r.cat && !r.cat.test(c)) continue; if (r.re.test(t)) return { maker: r.maker, kubun: r.kubun, model: t }; } }
+  return null;
+}
+// 基準掛率（仕入÷定価）の初期値。**数字は本体に書かない**（2026-09-26）。
+// 本体HTMLは誰でも読める公開版（スマホ用）にも載るため、商売の数字は同じフォルダの maker_rates_local.js
+// （公開から除外）に置き、ここではそれを読むだけにした。公開版にはそのファイルが無い＝空で始まり、
+// 配信ファイルで届いた掛率（MAKER_RATES_HAISHIN_KEY）を使う。
+const DEFAULT_MAKER_RATES = (typeof window !== "undefined" && window.SAKAE_DEFAULT_MAKER_RATES && typeof window.SAKAE_DEFAULT_MAKER_RATES === "object") ? window.SAKAE_DEFAULT_MAKER_RATES : {};
+const MAKER_RATES_HAISHIN_KEY = "sakae_maker_rates_haishin"; // 配信ファイルで届いた掛率（スマホ・別PC）
+function makerRatesHaishinLoad() { try { const o = JSON.parse(localStorage.getItem(MAKER_RATES_HAISHIN_KEY) || "null"); return (o && typeof o === "object") ? o : {}; } catch (e) { return {}; } }
+function makerRatesHaishinSave(o) { try { localStorage.setItem(MAKER_RATES_HAISHIN_KEY, JSON.stringify(o || {})); } catch (e) {} }
+const MAKER_RATES_KEY = "sakae_maker_rates"; // localStorage。見積ソフトと価格調査ソフトは同じ localhost なので共有される
+function makerRatesLoad() { const base = { ...DEFAULT_MAKER_RATES, ...makerRatesHaishinLoad() }; try { const o = JSON.parse(localStorage.getItem(MAKER_RATES_KEY) || "null"); return (o && typeof o === "object") ? { ...base, ...o } : base; } catch (e) { return base; } }
+function makerRatesSave(o) { try { localStorage.setItem(MAKER_RATES_KEY, JSON.stringify(o || {})); } catch (e) {} }
+function makerRateOf(rates, maker, kubun) { if (!maker || !kubun) return null; const v = (rates || {})[maker + "|" + kubun]; const n = parseFloat(v); return (n > 0 && n < 1.5) ? n : null; }
+// ===== メーカー直リンク（型番から資料のURLが決まるもの。2026-09-19 実測で確認・資料集めボット docs_fetch.py と同じ内容）=====
+//  ◎確実：パナソニック照明（施設/住宅/非常灯）・三菱照明・三菱換気扇/空調・遠藤照明
+//  △不可：オーデリック（会員ログイン）・大光電機（内部ID）・コイズミ（ファイル名がハッシュ）＝ネット検索か手で取り込む
+//  ※コーウェルは「小組画像」ページを読まないと品コードが分からないので、ここではそのページを開くリンクだけ返す
+function makerDocLinks(model, cat) {
+  const m = String(model || "").normalize("NFKC").toUpperCase().replace(/[\s　]/g, "");
+  if (!m) return [];
+  const d = detectMaker(model, cat);
+  const maker = d ? d.maker : "";
+  const out = [];
+  const push = (kind, ext, url, note) => out.push({ kind: kind, ext: ext, url: url, note: note || "" });
+  if (maker === "パナソニック" && /照明|非常灯/.test(d.kubun || "")) {
+    const P = "https://www2.panasonic.biz/jp/catalog/lighting/products/nsl/image/preview/";
+    push("姿図", "pdf", P + "doc/" + m + ".pdf", "パナソニック公式（施設・住宅とも）");
+    push("画像", "jpg", P + "img/" + m + ".jpg", "パナソニック公式");
+  } else if (maker === "三菱電機" && /照明|非常灯/.test(d.kubun || "")) {
+    // 正式表記は「MY-V450331/N AHTN」。URLは / を 2f、空白を _ にした形
+    const mo = /^([A-Z]{2,3}-[A-Z0-9\-]+)\/(WW|EL|N|L|W|D)[ ]?([A-Z0-9]{2,})$/.exec(String(model).normalize("NFKC").toUpperCase().trim());
+    if (mo) {
+      const b = mo[1].toLowerCase(), c = mo[2].toLowerCase(), sfx = mo[3].toLowerCase();
+      const D = "https://dl.mitsubishielectric.co.jp/dl/ldg/wink/ssl/wink_doc/m_contents/wink/";
+      push("仕様書", "pdf", D + "SHO_SN/" + b + "2f" + c + "_" + sfx + "_0_sn.pdf", "三菱 納入仕様書");
+      push("姿図", "dxf", D + "L_SUGATA/" + b + c + sfx + ".dxf", "三菱 姿図（CAD）");
+      push("小組姿図", "jpg", D + "L_KOGUMI/" + b + c + "_" + sfx + "_.jpg", "三菱 小組JPEG");
+    }
+  } else if (maker === "三菱電機" && /換気|空調/.test(d.kubun || "")) {
+    const low = m.toLowerCase();
+    const D = "https://dl.mitsubishielectric.co.jp/dl/ldg/wink/ssl/wink_doc/m_contents/wink/";
+    push("仕様書", "pdf", D + "FAN_SN/" + low + "_0_sn.pdf", "三菱 納入仕様書（無ければ次の _1_ を試す）");
+    push("仕様書", "pdf", D + "FAN_SN/" + low + "_1_sn.pdf", "三菱 納入仕様書（別番号）");
+    push("画像", "jpg", D + "N_PHOTO/" + low + "_pho.jpg", "三菱 外観写真");
+  } else if (maker === "遠藤照明") {
+    const D = "https://data2.endo-lighting.co.jp/data/";
+    push("仕様書", "pdf", D + "syz/" + m + "-K.pdf", "遠藤照明 仕様書");
+    push("姿図", "jpg", D + "jpeg/" + m + ".jpg", "遠藤照明 姿図");
+    push("姿図", "dxf", D + "dxf/" + m + ".dxf", "遠藤照明 姿図（CAD）");
+    push("画像", "jpg", D + "gazou/" + m + "-K.jpg", "遠藤照明 外観写真");
+  } else if (/^(HF|FL|LD|SL)\d/.test(m)) {
+    push("小組姿図", "html", "https://www.cowell.co.jp/small_group/", "コーウェル 小組画像の一覧（型番のボタンを押すと画像）");
+  }
+  return out;
+}
+// そのメーカーが「型番から自動で取れるか」。案内文に使う
+function makerDocNote(model, cat) {
+  const d = detectMaker(model, cat);
+  if (!d) return "";
+  if (makerDocLinks(model, cat).length) return d.maker + " は型番から直接ひらけます";
+  if (d.maker === "オーデリック") return "オーデリックは資料が会員ログインの中にあります（検索→ログイン→手で取り込み）";
+  if (d.maker === "大光電機") return "大光電機は型番から直接ひらけません（製品ページを開いて手で取り込み）";
+  if (d.maker === "コイズミ照明") return "コイズミはファイル名が固定でないため、検索して手で取り込みます";
+  return "";
+}
+// ===== ここまで共通 =====
+
+// 設定タブのカード：メーカー別 仕入掛率（見積ソフトと同じ localStorage を読み書き）
+function MakerRatesCard() {
+  const [rates, setRatesL] = React.useState(makerRatesLoad);
+  const put = (k, v) => { const n = { ...rates, [k]: v === "" ? "" : parseFloat(v) }; setRatesL(n); makerRatesSave(n); };
+  const reset = () => { if (!window.confirm("メーカー別の掛率を、仕入実績から出した初期値に戻します。よろしいですか？")) return; const n = { ...DEFAULT_MAKER_RATES, ...makerRatesHaishinLoad() }; setRatesL(n); makerRatesSave(n); };
+  return (
+    <Card title="🏭 メーカー別 仕入掛率（仕入 ÷ 定価・見積ソフトと共通）" right={<Btn onClick={reset}>実績の値に戻す</Btn>}>
+      <div className="text-xs text-slate-500 mb-2">定価しか分からない品目の仕入の目安＝定価×この率。検索結果の「掛率」欄に「推定」として出ます。初期値は2026-09の仕入実績（ニシムラ・湖睦のNET表）。空欄＝実績なし。</div>
+      <div className="overflow-x-auto"><table className="tbl text-sm whitespace-nowrap">
+        <thead><tr><th>メーカー</th>{MAKER_KUBUN.map((k) => <th key={k}>{k}</th>)}</tr></thead>
+        <tbody>{MAKER_LIST.map((mk) => (
+          <tr key={mk}><td>{mk}</td>{MAKER_KUBUN.map((k) => { const key = mk + "|" + k; const v = rates[key]; return (
+            <td key={k}><input type="number" step="0.01" min="0" max="1.5" value={v == null || v === "" ? "" : v} placeholder="—" onChange={(e) => put(key, e.target.value)} className="w-16 border border-slate-300 rounded px-1 py-0.5 text-right" /></td>
+          ); })}</tr>
+        ))}</tbody>
+      </table></div>
+    </Card>
+  );
+}
 // 資料の種別。q＝Google検索に足すキーワード。pdf=true は filetype:pdf で実ファイルに絞る。
 const DOC_KINDS = [
   { key: "catalog", label: "📕 カタログ", q: "カタログ", pdf: true },
   { key: "spec", label: "📘 仕様書", q: "仕様書 OR 技術資料", pdf: true },
   { key: "drawing", label: "📐 姿図・外形図", q: "姿図 OR 外形図 OR 寸法図", pdf: true },
+  // 小組姿図＝本体と部品を組み合わせた状態の図。メーカーで呼び方が違うので複数の言い方で探す。
+  // 三菱電機は「小組JPEG」で JPEG 配布のため、ここは filetype:pdf で絞らない。
+  { key: "kogumi", label: "🧩 小組姿図", q: "小組姿図 OR 小組JPEG OR 小組図 OR 組合せ姿図 OR 小組" },
   { key: "manual", label: "🔧 施工説明書", q: "施工説明書 OR 取扱説明書", pdf: true },
   { key: "cad", label: "📁 CADデータ", q: "CAD OR DXF OR JWW" },
   { key: "image", label: "🖼 画像で姿図", q: "姿図 OR 外形図", mode: "image" },
 ];
-const DOC_KIND_NAMES = ["カタログ", "仕様書", "姿図・外形図", "施工説明書", "CADデータ", "その他"];
+const DOC_KIND_NAMES = ["カタログ", "仕様書", "姿図・外形図", "小組姿図", "施工説明書", "CADデータ", "その他"];
+// ===== マスタ更新の差分（何が増えた／単価が変わった／消えたか） =====
+// 見積マスタの id は見積ソフト側で毎回振り直されるため、名称＋施工方法で突き合わせる
+const sekisanKey = (x) => (x && x.id) ? ("\u241fid\u241f" + x.id) : norm((x.name || "") + "\u241f" + (x.sekou || "") + "\u241f" + (x.unit || ""));  // 同名品目(プルボックス等)でキーが衝突し毎回「新規」判定される問題の対策。idがあればidで一意に照合する。
+// 表示名には分類も付ける。公共工事の正式な言い方は「名称＋摘要」で、
+// 名称は分類(cat)に入っているため、品名だけ出すと「A型 定尺 1.8m 蓋付」となり何の線ぴか分からない（2026-09-18）
+const sekisanLabel = (x) => {
+  const n = [x.name, x.sekou].filter(Boolean).join(" ").trim();
+  const c = String(x.cat || "").trim();
+  return (c && norm(n).indexOf(norm(c)) !== 0) ? (c + " " + n) : n;
+};
+const zairyoKey = (x) => norm(x.model || "") || norm(x.name || "");
+const zairyoLabel = (x) => [x.model, x.name].filter(Boolean).join(" ");
+// 差分の1行ごとに key と中身を持たせる（1件ずつ選んで取り込めるようにするため。2026-09-18）
+function diffMasterLists(oldList, newList, keyOf, priceOf, labelOf) {
+  const om = new Map();
+  (oldList || []).forEach((x) => { const k = keyOf(x); if (k) om.set(k, x); });
+  const added = [], changed = [];
+  (newList || []).forEach((x) => {
+    const k = keyOf(x); if (!k) return;
+    const o = om.get(k);
+    if (!o) { added.push({ key: k, label: labelOf(x), price: num(priceOf(x)), item: x }); return; }
+    const a = num(priceOf(o)), b = num(priceOf(x));
+    if (a !== b) changed.push({ key: k, label: labelOf(x), from: a, to: b, item: x, old: o });
+    om.delete(k);
+  });
+  const removed = [];
+  om.forEach((x, k) => removed.push({ key: k, label: labelOf(x), price: num(priceOf(x)), old: x }));
+  return { added, changed, removed, prevTotal: (oldList || []).length, total: (newList || []).length };
+}
+// 1行ごとの「いまの中身」のしるし。見送った行が、次に中身が変わるまで黙っているために使う
+const rowSig = (kind, r) => kind + ":" + (kind === "c" ? r.to : r.price);
+// 見送ると決めた行を差分から外す
+function dropDeclined(d, memo) {
+  if (!d || !memo) return d;
+  const f = (kind, rows) => rows.filter((r) => memo[r.key] !== rowSig(kind, r));
+  const out = Object.assign({}, d, { added: f("a", d.added), changed: f("c", d.changed), removed: f("r", d.removed) });
+  out.total = out.prevTotal + out.added.length - out.removed.length;
+  return out;
+}
+// 選んだ行だけを、いまのマスタに混ぜた新しい一覧を作る
+function mergePicked(oldList, d, keyOf, chosen) {
+  const drop = new Set(), rep = new Map(), add = [];
+  d.removed.forEach((r) => { if (chosen(r.key)) drop.add(r.key); });
+  d.changed.forEach((r) => { if (chosen(r.key)) rep.set(r.key, r.item); });
+  d.added.forEach((r) => { if (chosen(r.key)) add.push(r.item); });
+  const out = [];
+  (oldList || []).forEach((x) => { const k = keyOf(x); if (drop.has(k)) return; out.push(rep.has(k) ? rep.get(k) : x); });
+  return out.concat(add);
+}
+const hasMasterDiff = (d) => !!(d && (d.added.length || d.changed.length || d.removed.length || d.total !== d.prevTotal));
+
 // ===== メーカー直リンク（URLパターン） =====
 // 実物のURLを {modelU} 等に置き換えて登録すると、以後その形で品番ごとに直接開ける。
 // 既定＝パナソニック施設照明（実際にPDF/画像が取得できることを確認済み。2026-09-03）。
 // ※仕様図と電子カタログは日付＋内部IDのURLで品番から組み立てられないため、製品ページ検索を用意している。
 const DEFAULT_URL_PATTERNS = [
-  { id: "pana-sugata", name: "📐 姿図（PDF）", maker: "パナソニック", url: "https://www2.panasonic.biz/jp/catalog/lighting/products/nsl/image/preview/doc/{modelU}.pdf", note: "施設照明の品番のみ" },
+  { id: "pana-sugata", name: "📐 姿図（PDF）", maker: "パナソニック", url: "https://www2.panasonic.biz/jp/catalog/lighting/products/nsl/image/preview/doc/{modelU}.pdf", note: "施設照明の品番のみ。小組品番（XLX…）を入れると本体＋ライトバーを組んだ状態の図（小組姿図）が出ます" },
   { id: "pana-sugata-img", name: "🖼 姿図（画像）", maker: "パナソニック", url: "https://www2.panasonic.biz/jp/catalog/lighting/products/nsl/image/preview/img/{modelU}.jpg", note: "" },
   { id: "pana-cad", name: "📁 CAD図", maker: "パナソニック", url: "https://www2.panasonic.biz/jp/catalog/lighting/products/nsl/cad/gif/{modelU}.gif", note: "" },
   { id: "pana-detail", name: "🏭 製品ページ（仕様図・電子カタログはここから）", maker: "パナソニック", url: "https://www.google.com/search?q=site%3Awww2.panasonic.biz+{modelU}", note: "仕様図・電子カタログのリンクが揃っています" },
 ];
 // 品番の表記ゆれを吸収：{modelU}=スペース除去の大文字（例「XFX450DHN LE9」→「XFX450DHNLE9」）
 const modelUpper = (m) => String(m || "").replace(/[\s　]/g, "").toUpperCase();
+// ===== 資料・ネット検索に使う「メーカー品番」を選ぶ（2026-09-19）=====
+// 材料マスタの型番は、仕入先の社内品番が入っていることがある（例 湖睦電機の「5707」＝数字だけ）。
+// そのまま検索しても相手先サイトでは見つからないので、品名の中のメーカー品番を優先して使う。
+//   例）型番「5707」／品名「コーウェル　FL12N-SB3」→ 検索は FL12N-SB3
+// ※社内の照合（仕入実績を引く等）は今までどおり型番で行う。ここで変えるのは「外を検索するときの語」だけ。
+const MAKER_MODEL_RE = /(?:[0-9]{0,2}[A-Za-z]{1,6}-){0,2}[A-Za-z]{1,6}-?[0-9][A-Za-z0-9\-\/]{3,}(?:\s[A-Z]{1,2}[0-9])?/g;
+const looksMakerModel = (s) => { const t = String(s || "").trim(); return t.length >= 4 && /[A-Za-z]/.test(t) && /[0-9]/.test(t); };
+// 品名の中からメーカー品番らしい語を拾う（全角で書かれていても拾えるよう NFKC で正規化）
+function modelInName(name) {
+  const nm = String(name || "").normalize("NFKC");
+  const hits = (nm.match(MAKER_MODEL_RE) || []).map((t) => t.replace(/[-\/]+$/, "")).filter(looksMakerModel);
+  if (!hits.length) return "";
+  return hits.sort((a, b) => b.length - a.length)[0];   // 一番長いものを品番とみなす
+}
+// この品目を外で検索するときの語。戻り: { term, from } from="型番"|"品名"|""
+function searchModelOf(item) {
+  const code = String((item && item.model) || "").trim();
+  if (looksMakerModel(code)) return { term: code, from: "型番" };   // 型番がメーカー品番らしければそのまま
+  const inName = modelInName((item && item.name) || "");
+  if (inName) return { term: inName, from: "品名" };                 // 社内品番のときは品名の中の品番を使う
+  return { term: code || String((item && item.name) || "").trim(), from: code ? "型番" : "" };
+}
 function fillUrlPattern(tpl, model, maker, name) {
   const mu = modelUpper(model);
   return String(tpl || "")
@@ -281,7 +509,8 @@ function docSearchUrl(term, kind, maker) {
   const ms = makerSiteOf(maker);
   const parts = [term];
   if (ms && ms.site) parts.push("site:" + ms.site); else if (ms) parts.push(ms.name); else if (maker) parts.push(maker);
-  if (kind && kind.q) parts.push(kind.q);
+  // 「A OR B」を足すときは丸括弧で括る。括らないと OR が型番まで巻き込む書き方に見えるため（2026-09-19）
+  if (kind && kind.q) parts.push(kind.q.indexOf(" OR ") >= 0 ? ("(" + kind.q + ")") : kind.q);
   if (kind && kind.pdf) parts.push("filetype:pdf");
   const q = encodeURIComponent(parts.filter(Boolean).join(" "));
   return (kind && kind.mode === "image") ? ("https://www.google.com/search?tbm=isch&q=" + q) : ("https://www.google.com/search?q=" + q);
@@ -346,7 +575,7 @@ function parseZairyoXlsx(arrayBuffer, fileName) {
   const mh = mRows[0].map((h) => String(h || "").trim());
   const mi = (label) => mh.findIndex((h) => h === label);
   const cCat = mi("分類"), cMaker = mi("メーカ"), cCode = mi("型番"), cName = mi("品名"), cUnit = mi("単位"),
-    cPrice = mi("最新仕入単価"), cPrev = mi("前回単価"), cDate = mi("最終仕入日"), cVendor = mi("仕入先"), cNote = mi("備考"), cList = mi("定価");
+    cPrice = mi("最新仕入単価"), cPrev = mi("前回単価"), cDate = mi("最終仕入日"), cVendor = mi("仕入先"), cNote = mi("備考"), cList = mi("定価"), cSrc = mi("出どころ");
   if (cName < 0 || cPrice < 0) throw new Error("「品名」「最新仕入単価」列が見つかりません（材料マスタ.xlsxを指定してください）");
   const items = [];
   for (let i = 1; i < mRows.length; i++) {
@@ -357,7 +586,7 @@ function parseZairyoXlsx(arrayBuffer, fileName) {
       model: cCode >= 0 ? String(r[cCode] || "") : "", name, unit: cUnit >= 0 ? String(r[cUnit] || "") : "",
       price: r[cPrice] === "" ? "" : num(r[cPrice]), prev: cPrev >= 0 && r[cPrev] !== "" ? num(r[cPrev]) : "",
       date: cDate >= 0 ? String(r[cDate] || "") : "", vendor: cVendor >= 0 ? String(r[cVendor] || "") : "",
-      note: cNote >= 0 ? String(r[cNote] || "") : "", listPrice: cList >= 0 && r[cList] !== "" ? num(r[cList]) : "",
+      note: cNote >= 0 ? String(r[cNote] || "") : "", listPrice: cList >= 0 && r[cList] !== "" ? num(r[cList]) : "", srcType: srcTypeOf(cNote >= 0 ? String(r[cNote] || "") : "", cSrc >= 0 ? String(r[cSrc] || "") : ""),
     });
   }
   let history = [];
@@ -366,6 +595,7 @@ function parseZairyoXlsx(arrayBuffer, fileName) {
     const hh = hRows[0].map((h) => String(h || "").trim());
     const hi = (label) => hh.findIndex((h) => h === label);
     const hDate = hi("仕入日"), hVendor = hi("仕入先"), hMaker = hi("メーカ"), hCode = hi("型番"), hName = hi("品名"), hQty = hi("数量"), hUnit = hi("単位"), hPrice = hi("単価"), hAmt = hi("金額"), hSite = hi("現場");
+    const hImp = hi("取込日"), hSrc = hi("出典"); // 2026-09-18〜 取込ごとの記録（古い行には無い）
     for (let i = 1; i < hRows.length; i++) {
       const r = hRows[i]; if (!r) continue;
       const name = hName >= 0 ? String(r[hName] || "").trim() : "";
@@ -376,10 +606,11 @@ function parseZairyoXlsx(arrayBuffer, fileName) {
         qty: hQty >= 0 ? r[hQty] : "", unit: hUnit >= 0 ? String(r[hUnit] || "") : "",
         price: hPrice >= 0 && r[hPrice] !== "" ? num(r[hPrice]) : "", amt: hAmt >= 0 && r[hAmt] !== "" ? num(r[hAmt]) : "",
         site: hSite >= 0 ? String(r[hSite] || "") : "",
+        imported: hImp >= 0 ? String(r[hImp] || "") : "", src: hSrc >= 0 ? String(r[hSrc] || "") : "", srcType: srcTypeOf("", hSrc >= 0 ? String(r[hSrc] || "") : ""),
       });
     }
   }
-  return { items, history, importedAt: new Date().toLocaleString("ja-JP"), fileName: fileName || "", lastMod: 0 };
+  return zairyoWithSrc({ items, history, importedAt: new Date().toLocaleString("ja-JP"), fileName: fileName || "", lastMod: 0 });
 }
 
 // ================= 見積依頼書 Excel 出力（ExcelJS） =================
@@ -494,16 +725,115 @@ function RequestSheet({ cur, settings, showPrice }) {
   );
 }
 
+// ================= マスタ更新の確認モーダル（取り込む内容を見て判断する） =================
+// 1件ずつ「入れる／入れない」を選べる一覧（2026-09-18）。榮さんが選ばなかった行は入らない
+function DiffList({ title, color, rows, render, picked, onToggle, onAll }) {
+  const [open, setOpen] = useState(rows.length <= 12);
+  if (!rows.length) return null;
+  const n = rows.filter((r) => picked.has(r.key)).length;
+  return (
+    <div className="mt-1.5">
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className={"text-xs font-semibold " + color}>{title}（{n}/{rows.length}件）</div>
+        <button type="button" className="text-xs text-cyan-700 hover:underline" onClick={() => onAll(rows, n !== rows.length)}>
+          {n === rows.length ? "全部やめる" : "全部えらぶ"}
+        </button>
+        {rows.length > 12 && <button type="button" className="text-xs text-slate-500 hover:underline" onClick={() => setOpen(!open)}>{open ? "たたむ" : "1件ずつ見る"}</button>}
+      </div>
+      {open ? (
+        <div className="mt-0.5 max-h-52 overflow-auto border border-slate-200 rounded bg-white">
+          {rows.map((r) => (
+            <label key={r.key} className="flex items-start gap-1.5 px-1.5 py-0.5 text-xs hover:bg-slate-50 cursor-pointer">
+              <input type="checkbox" className="mt-0.5 shrink-0" checked={picked.has(r.key)} onChange={() => onToggle(r.key)} />
+              <span className={"flex-1 min-w-0 break-words " + (picked.has(r.key) ? "text-slate-700" : "text-slate-400 line-through")} title={render(r)}>{render(r)}</span>
+            </label>
+          ))}
+        </div>
+      ) : (
+        <ul className="text-xs text-slate-600 ml-3 mt-0.5 space-y-0.5">
+          {rows.slice(0, 8).map((r) => <li key={r.key} className="truncate" title={render(r)}>・{render(r)}</li>)}
+          <li className="text-slate-400">…他 {rows.length - 8} 件（「1件ずつ見る」で選べます）</li>
+        </ul>
+      )}
+    </div>
+  );
+}
+function MasterUpdateModal({ items, onApply, onSkip }) {
+  const [sel, setSel] = useState(() => items.map((x) => x.id));
+  // 1件ずつの選び分け。はじめは全部えらんだ状態
+  const [picks, setPicks] = useState(() => {
+    const o = {};
+    items.forEach((it) => { o[it.id] = new Set([].concat(it.diff.added, it.diff.changed, it.diff.removed).map((r) => r.key)); });
+    return o;
+  });
+  const toggle = (id) => setSel((s) => (s.indexOf(id) >= 0 ? s.filter((x) => x !== id) : [...s, id]));
+  const togRow = (id, key) => setPicks((p) => {
+    const s = new Set(p[id]); if (s.has(key)) s.delete(key); else s.add(key);
+    return Object.assign({}, p, { [id]: s });
+  });
+  const allRows = (id, rows, on) => setPicks((p) => {
+    const s = new Set(p[id]); rows.forEach((r) => (on ? s.add(r.key) : s.delete(r.key)));
+    return Object.assign({}, p, { [id]: s });
+  });
+  const nOf = (it) => (sel.indexOf(it.id) >= 0 ? (picks[it.id] || new Set()).size : 0);
+  const total = items.reduce((a, it) => a + nOf(it), 0);
+  return (
+    <div className="fixed inset-0 bg-black/50 z-[60] flex items-start justify-center p-4 overflow-auto">
+      <div className="bg-white rounded-lg shadow-xl max-w-6xl w-full my-6 p-4">
+        <div className="font-semibold text-lg mb-1">🔄 マスタの更新が見つかりました</div>
+        <div className="text-sm text-slate-600 mb-3">
+          取り込む内容をご確認ください。取り込むと、検索や照合に使う単価が新しくなります（作成中の案件の金額は変わりません）。
+          <span className="block text-xs text-slate-500 mt-0.5">チェックを外した行は取り込みません。外した行は、その品目の中身が次に変わるまで出てきません。</span>
+        </div>
+        <div className="space-y-2">
+          {items.map((it) => (
+            <div key={it.id} className={"border rounded p-2.5 " + (sel.indexOf(it.id) >= 0 ? "border-cyan-300 bg-cyan-50/40" : "border-slate-200")}>
+              <div className="flex items-start gap-2">
+                <input type="checkbox" className="mt-1 cursor-pointer" checked={sel.indexOf(it.id) >= 0} onChange={() => toggle(it.id)} />
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-sm cursor-pointer" onClick={() => toggle(it.id)}>{it.title}</div>
+                  <div className="text-xs text-slate-500">{it.sub}</div>
+                  <div className="text-sm mt-1">
+                    現在 <b>{it.diff.prevTotal.toLocaleString()}</b> 件 → 取り込むと <b className="text-cyan-800">{(it.diff.prevTotal + it.diff.added.filter((r) => (picks[it.id] || new Set()).has(r.key)).length - it.diff.removed.filter((r) => (picks[it.id] || new Set()).has(r.key)).length).toLocaleString()}</b> 件
+                  </div>
+                  {sel.indexOf(it.id) >= 0 && <React.Fragment>
+                    <DiffList title="＋ 新しく増える" color="text-emerald-700" rows={it.diff.added} picked={picks[it.id] || new Set()}
+                      onToggle={(k) => togRow(it.id, k)} onAll={(rows, on) => allRows(it.id, rows, on)}
+                      render={(r) => r.label + (r.price ? "（" + yen(r.price) + "円）" : "")} />
+                    <DiffList title="✏ 単価が変わる" color="text-amber-700" rows={it.diff.changed} picked={picks[it.id] || new Set()}
+                      onToggle={(k) => togRow(it.id, k)} onAll={(rows, on) => allRows(it.id, rows, on)}
+                      render={(r) => r.label + "： " + yen(r.from) + " → " + yen(r.to) + " 円"} />
+                    <DiffList title="－ 無くなる（チェックを外すと今の内容のまま残ります）" color="text-rose-700" rows={it.diff.removed} picked={picks[it.id] || new Set()}
+                      onToggle={(k) => togRow(it.id, k)} onAll={(rows, on) => allRows(it.id, rows, on)}
+                      render={(r) => r.label + (r.price ? "（" + yen(r.price) + "円）" : "")} />
+                  </React.Fragment>}
+                  {!it.diff.added.length && !it.diff.changed.length && !it.diff.removed.length ? <div className="text-xs text-slate-500 mt-1">品目の増減・単価の変更はありません（並び順や内容の細かな差のみ）。</div> : null}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex gap-1.5 justify-end mt-3 flex-wrap">
+          <Btn onClick={onSkip}>今回は取り込まない</Btn>
+          <Btn variant="primary" disabled={!total} onClick={() => onApply(sel, picks)}>えらんだ {total} 行を取り込む</Btn>
+        </div>
+        <div className="text-xs text-slate-400 mt-1.5 text-right">取り込まなくても、設定タブの「更新を確認」からいつでも取り込めます。</div>
+      </div>
+    </div>
+  );
+}
+
 // ================= 資料モーダル（カタログ・仕様書・姿図） =================
 function DocsModal({ item, docs, settings, onSaveDocs, onClose }) {
   const key = docKeyOf(item);
   const list = (docs && docs[key]) || [];
-  const term = ((item.model || "").trim() || (item.name || "").trim());
+  const picked = searchModelOf(item);
+  const term = picked.term;                        // 外を検索するときの語（社内品番なら品名の中の品番に置き換わる）
   // メーカーは自動判定＋手動変更可（見積マスタ由来や貼り付け型番はメーカー情報が無いため）
   const [mk, setMk] = useState(() => { const m = makerSiteOf(item.maker); return m ? m.name : (item.maker || ""); });
   const ms = makerSiteOf(mk);
   const pats = patternsFor(settings, mk);
-  const hasModel = !!(item.model || "").trim();
+  const hasModel = looksMakerModel(term);          // 直リンクはメーカー品番でないと開けない
   const [f, setF] = useState({ title: "", kind: "カタログ", url: "", note: "" });
   const open = (url) => window.open(url, "_blank");
   const add = () => {
@@ -540,16 +870,41 @@ function DocsModal({ item, docs, settings, onSaveDocs, onClose }) {
                 {hasModel ? (
                   <>
                     <div className="flex gap-1.5 flex-wrap">
-                      {pats.map((p) => <Btn key={p.id} variant="primary" title={p.note || fillUrlPattern(p.url, item.model, mk, item.name)} onClick={() => open(fillUrlPattern(p.url, item.model, mk, item.name))}>{p.name}</Btn>)}
+                      {pats.map((p) => <Btn key={p.id} variant="primary" title={p.note || fillUrlPattern(p.url, term, mk, item.name)} onClick={() => open(fillUrlPattern(p.url, term, mk, item.name))}>{p.name}</Btn>)}
                     </div>
-                    <div className="text-xs text-slate-500 mt-1.5">品番「{modelUpper(item.model)}」で直接ひらきます。該当が無い品番は相手先サイトで「見つかりません」になります（その場合は下の検索をお使いください）。</div>
+                    <div className="text-xs text-slate-500 mt-1.5">品番「{modelUpper(term)}」で直接ひらきます。該当が無い品番は相手先サイトで「見つかりません」になります（その場合は下の検索をお使いください）。</div>
                   </>
-                ) : <div className="text-sm text-amber-700">直リンクには型番が必要です（この品目は型番が未登録のため、下の検索をお使いください）。</div>}
+                ) : <div className="text-sm text-amber-700">直リンクにはメーカー品番が必要です（この品目は型番が未登録か、仕入先の社内品番のためです。下の検索をお使いください）。</div>}
               </div>
             )}
 
+            {(() => {
+              // 2026-09-19 型番からURLが決まるメーカーは、検索せずに直接ひらく（見積ソフト・資料集めボットと同じ表）
+              const shown = new Set(hasModel ? pats.map((p) => fillUrlPattern(p.url, term, mk, item.name)) : []);
+              const dl = makerDocLinks(term, item.cat || "").filter((x) => !shown.has(x.url));   // 上の🎯カードと同じURLは出さない
+              const note = makerDocNote(term, item.cat || "");
+              if (!dl.length && !note) return null;
+              return (
+                <div className="border border-emerald-300 bg-emerald-50/60 rounded p-2.5 mb-2">
+                  <div className="text-sm font-semibold mb-1.5">🏭 メーカー直リンク（型番から直接ひらく）</div>
+                  {dl.length > 0 ? (
+                    <div className="flex gap-1.5 flex-wrap">
+                      {dl.map((x, i) => { const n = dl.filter((y, j) => j < i && y.kind === x.kind && y.ext === x.ext).length; // 同じ種類が2つ（三菱換気扇の番号違い）のときは②③を付ける
+                        return <Btn key={i} variant="primary" title={x.note + "  " + x.url} onClick={() => open(x.url)}>{x.kind}{n ? "②③④".charAt(n - 1) : ""}（{x.ext}）</Btn>; })}
+                    </div>
+                  ) : null}
+                  <div className="text-xs text-slate-500 mt-1.5">{note || "型番から直接ひらけるメーカーです。"}</div>
+                </div>
+              );
+            })()}
+
             <div className="border border-slate-200 rounded p-2.5 mb-2">
               <div className="text-sm font-semibold mb-1.5">🔎 資料を検索（クリックで別タブに開く → PDFをダウンロード）</div>
+              {picked.from === "品名" && (
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mb-1.5">
+                  型番「{item.model}」は仕入先の社内品番のようなので、品名の中の <b className="font-mono">{term}</b> で探します。
+                </div>
+              )}
               <div className="flex gap-1.5 flex-wrap">
                 {DOC_KINDS.map((k) => <Btn key={k.key} onClick={() => open(docSearchUrl(term, k, mk))}>{k.label}</Btn>)}
               </div>
@@ -611,7 +966,8 @@ function PriceModal({ item, market, settings, onSave, onAdopt, onClose }) {
   const key = docKeyOf(item);
   const rec = (market && market[key]) || null;
   const entries = (rec && rec.entries) || [];
-  const term = ((item.model || "").trim() || (item.name || "").trim());
+  const picked = searchModelOf(item);
+  const term = picked.term;                        // ネット価格を探すときの語も、社内品番ではなくメーカー品番を使う
   const adopted = marketAdopted(rec);
   const [f, setF] = useState({ price: "", source: "", url: "", note: "", unit: (rec && rec.unit) || item.unit || "", name: (rec && rec.name) || item.name || "", maker: (rec && rec.maker) || item.maker || "" });
   const sources = useMemo(() => { const st = new Set(); (settings.links || []).forEach((l) => { if (l.name) st.add(l.name); }); Object.keys(market || {}).forEach((k) => ((market[k].entries) || []).forEach((e) => { if (e.source) st.add(e.source); })); return Array.from(st); }, [market, settings]);
@@ -700,6 +1056,7 @@ function PriceModal({ item, market, settings, onSave, onAdopt, onClose }) {
 
 // ================= 検索タブ =================
 function SearchTab({ q, setQ, sekisan, zairyo, settings, docs, market, onAddRow, onShowHist, onShowDocs, onShowPrice, netQ, setNetQ, netEdited, setNetEdited }) {
+  const [hideMitsu, setHideMitsu] = useState(false);
   const toks = useMemo(() => tokens(q), [q]);
   const res = useMemo(() => {
     if (!toks.length) return { z: [], m: [], h: [], p: [] };
@@ -709,6 +1066,30 @@ function SearchTab({ q, setQ, sekisan, zairyo, settings, docs, market, onAddRow,
     const p = Object.keys(market || {}).map((k) => ({ key: k, ...market[k] })).filter((r) => hitAll(norm([r.model, r.name, r.maker, (r.entries || []).map((e) => e.source).join(" ")].join("␟")), toks));
     return { z, m, h, p };
   }, [toks, zairyo, sekisan, market]);
+  // 仕入先で比べる：同じ品目（型番、無ければ品名）を仕入先ごとに「いちばん新しい1件」へ絞る。
+  // 検索中はヒットした履歴だけ、検索語が空なら履歴全部から「分類ごとにどこが安いことが多いか」を数える
+  const vendorCmp = useMemo(() => {
+    const src = toks.length ? res.h : (zairyo.history || []);
+    const catOf = {};
+    (zairyo.items || []).forEach((x) => { const k = norm(x.model) || ("#" + norm(x.name)); if (k && !catOf[k]) catOf[k] = x.cat || ""; });
+    const g = {};
+    src.forEach((h) => {
+      const k = norm(h.model) || ("#" + norm(h.name));
+      if (!k || !h.vendor || !(num(h.price) > 0)) return;
+      const it = g[k] || (g[k] = { key: k, model: h.model, name: h.name, maker: h.maker, unit: h.unit, cat: catOf[k] || "", vendors: {} });
+      const v = it.vendors[h.vendor];
+      if (!v || String(h.date) > String(v.date)) it.vendors[h.vendor] = { date: h.date, price: num(h.price) };
+    });
+    const items = Object.values(g).map((it) => {
+      const vs = Object.keys(it.vendors).map((name) => ({ name, ...it.vendors[name] })).sort((a, b) => a.price - b.price);
+      const newest = vs.reduce((m, v) => (String(v.date) > String(m.date) ? v : m), vs[0]);
+      return { ...it, vs, min: vs[0].price, newest };
+    });
+    const multi = items.filter((it) => it.vs.length >= 2).sort((a, b) => (a.cat || "").localeCompare(b.cat || "") || (a.model || "").localeCompare(b.model || ""));
+    const trend = {};
+    multi.forEach((it) => { const c = it.cat || "（分類なし）"; const t = trend[c] || (trend[c] = { cat: c, n: 0, wins: {} }); t.n++; t.wins[it.vs[0].name] = (t.wins[it.vs[0].name] || 0) + 1; });
+    return { multi, single: items.length - multi.length, trend: Object.values(trend).sort((a, b) => b.n - a.n), total: items.length };
+  }, [toks, res.h, zairyo]);
   const LIM = 100;
   const netTerm = netEdited ? netQ : q;
   const openLink = (l) => { const t = (netTerm || "").trim(); if (!t) { alert("検索語を入力してください"); return; } window.open(l.url.replace("{q}", encodeURIComponent(t)), "_blank"); };
@@ -753,23 +1134,61 @@ function SearchTab({ q, setQ, sekisan, zairyo, settings, docs, market, onAddRow,
         <div className="text-xs text-slate-400 mt-1.5">リンク先は設定タブで追加・編集できます。まとまった相場調査はClaudeに「この型番の相場を調べて」と依頼してください。</div>
       </Card>
 
+      {toks.length > 0 && vendorCmp.multi.length > 0 && (
+        <Card title={"🏪 仕入先で比べる（同じ品目を、仕入先ごとの最新単価で） " + vendorCmp.multi.length + "品目"}>
+          <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
+            <thead><tr><th>分類</th><th>型番</th><th>品名</th><th>単位</th><th>★最安の仕入先</th><th>ほかの仕入先（差額）</th><th></th></tr></thead>
+            <tbody>{vendorCmp.multi.slice(0, LIM).map((it) => (
+              <tr key={it.key} className="hover:bg-emerald-50">
+                <td>{it.cat}</td><td className="font-mono">{it.model}</td><td className="max-w-[22rem] truncate" title={it.name}>{it.name}</td><td className="text-center">{it.unit}</td>
+                <td><span className="font-semibold text-emerald-700">{it.vs[0].name}</span> <b className="text-emerald-800">{yen(it.vs[0].price)}円</b> <span className="text-xs text-slate-500">{it.vs[0].date}{it.vs[0] !== it.newest ? "（古い）" : ""}</span></td>
+                <td>{it.vs.slice(1).map((v) => (
+                  <div key={v.name} className="text-slate-600">{v.name} {yen(v.price)}円 <span className="text-xs text-slate-500">{v.date}</span> <span className="text-xs text-rose-600">+{yen(v.price - it.min)}円（+{Math.round((v.price / it.min - 1) * 100)}%）</span></div>
+                ))}</td>
+                <td className="text-center"><div className="flex gap-1">
+                  <Btn variant="ghost" title="この品の仕入履歴（全部）" onClick={() => onShowHist({ name: it.name, model: it.model })}>📈履歴</Btn>
+                  <Btn variant="primary" title="最安の仕入先・単価で見積に追加" onClick={() => onAddRow({ name: it.name, model: it.model, maker: it.maker || "", vendor: it.vs[0].name, catName: it.cat, unit: it.unit, cost: it.min })}>＋最安で追加</Btn>
+                </div></td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          <div className="text-xs text-slate-400 mt-1">※ 仕入先ごとに「いちばん新しい日付」の単価で比べています。日付が離れている（古い）ものは相場が動いている可能性があるので、そのまま使わず問い合わせてください。{vendorCmp.single ? "　1社だけの品目 " + vendorCmp.single + " 件は比べられないので省略。" : ""}</div>
+        </Card>
+      )}
+
+      {toks.length === 0 && vendorCmp.trend.length > 0 && (
+        <Card title="🏪 仕入先の傾向（分類ごとに、どこが安いことが多いか）">
+          <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
+            <thead><tr><th>分類</th><th>比べられる品目</th><th>安かった回数（仕入先ごと）</th></tr></thead>
+            <tbody>{vendorCmp.trend.map((t) => (
+              <tr key={t.cat}><td>{t.cat}</td><td className="text-center">{t.n}</td>
+                <td>{Object.keys(t.wins).sort((a, b) => t.wins[b] - t.wins[a]).map((nm) => <span key={nm} className="inline-block mr-3"><b className="text-emerald-700">{nm}</b> {t.wins[nm]}勝</span>)}</td></tr>
+            ))}</tbody>
+          </table></div>
+          <div className="text-xs text-slate-400 mt-1">2社以上から単価が来ている品目だけで数えています（{vendorCmp.multi.length}品目／履歴の品目 {vendorCmp.total}）。型番や品名で検索すると、その品目の仕入先ごとの単価が上に出ます。実績が増えるほど当たるようになります。</div>
+        </Card>
+      )}
+
       {toks.length > 0 && res.z.length > 0 && (
         <Card title={"📦 仕入実績（材料マスタ） " + res.z.length + "件"}>
           <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
-            <thead><tr><th>分類</th><th>メーカ</th><th>型番</th><th>品名</th><th>単位</th><th>最新仕入</th><th>前回</th><th>定価</th><th>掛率</th><th>最終仕入日</th><th>仕入先</th><th></th></tr></thead>
-            <tbody>{res.z.slice(0, LIM).map((x, i) => {
+            <thead><tr><th>分類</th><th>メーカ</th><th>型番</th><th>品名</th><th>単位</th><th>最新仕入</th><th>前回</th><th>定価</th><th>掛率</th><th>最終仕入日</th><th>仕入先</th><th>出どころ</th><th></th></tr></thead>
+            <tbody>{(hideMitsu ? res.z.filter((x) => (x.srcType || '不明') !== '見積') : res.z).slice(0, LIM).map((x, i) => {
               const ratio = (num(x.listPrice) > 0 && num(x.price) > 0) ? (num(x.price) / num(x.listPrice)).toFixed(2) : "";
+              const dm = detectMaker((x.model || "") + " " + (x.name || ""), x.cat);            // 型番からの判定
+              const mkName = x.maker || (dm ? dm.maker : "");
+              const estRate = (!ratio && num(x.listPrice) > 0 && dm) ? makerRateOf(makerRatesLoad(), mkName, dm.kubun) : null;
               return (<tr key={i} className="hover:bg-cyan-50">
-                <td>{x.cat}</td><td>{x.maker}</td><td className="font-mono">{x.model}{docCount(x) ? <span className="ml-1 text-xs bg-amber-100 text-amber-700 rounded px-1" title="登録済みの資料あり">📎{docCount(x)}</span> : null}</td><td className="max-w-[26rem] truncate" title={x.name}>{x.name}</td><td className="text-center">{x.unit}</td>
+                <td>{x.cat}</td><td>{x.maker || (dm ? <span className="text-slate-400" title={"型番から推定（" + (dm.kubun || "区分なし") + "）"}>{dm.maker}<span className="text-[10px]">（推定）</span></span> : "")}</td><td className="font-mono">{x.model}{docCount(x) ? <span className="ml-1 text-xs bg-amber-100 text-amber-700 rounded px-1" title="登録済みの資料あり">📎{docCount(x)}</span> : null}</td><td className="max-w-[26rem] truncate" title={x.name}>{x.name}</td><td className="text-center">{x.unit}</td>
                 <td className="text-right font-semibold text-cyan-800">{yen(x.price)}</td><td className="text-right text-slate-500">{yen(x.prev)}</td>
-                <td className="text-right text-slate-500">{yen(x.listPrice)}</td><td className="text-center text-slate-500">{ratio}</td>
-                <td>{x.date}</td><td className="max-w-[10rem] truncate" title={x.vendor}>{x.vendor}</td>
+                <td className="text-right text-slate-500">{yen(x.listPrice)}</td><td className="text-center text-slate-500">{ratio || (estRate ? <span className="text-violet-700" title={"メーカー別掛率の目安（" + mkName + "・" + dm.kubun + "）。仕入の目安 " + yen(Math.round(num(x.listPrice) * estRate))}>推定 {estRate}</span> : "")}</td>
+                <td>{x.date}</td><td className="max-w-[10rem] truncate" title={x.vendor}>{x.vendor}</td><td className="text-center"><SrcBadge t={x.srcType || srcTypeOf(x.note, "")} /></td>
                 <td className="text-center"><div className="flex gap-1">
                   <Btn variant="ghost" title="この品の仕入履歴" onClick={() => onShowHist(x)}>📈履歴</Btn>
                   <Btn variant="ghost" title="カタログ・仕様書・姿図をさがす" onClick={() => onShowDocs({ name: x.name, model: x.model, maker: x.maker })}>📄資料</Btn>
                   <Btn variant="ghost" title="ネット価格を調べて保存" onClick={() => onShowPrice({ name: x.name, model: x.model, maker: x.maker, unit: x.unit })}>💹</Btn>
                   <Btn variant="ghost" title="ネット検索語にセット" onClick={() => pickNet((x.model || x.name || "").trim())}>🌐</Btn>
-                  <Btn variant="primary" onClick={() => onAddRow({ name: x.name, model: x.model, maker: x.maker, vendor: x.vendor, catName: x.cat, unit: x.unit, cost: num(x.price) || "", listPrice: x.listPrice })}>＋追加</Btn>
+                  <Btn variant="primary" onClick={() => onAddRow({ name: x.name, model: x.model, maker: x.maker, vendor: x.vendor, catName: x.cat, unit: x.unit, cost: num(x.price) || "", listPrice: x.listPrice, costSrc: (x.srcType || srcTypeOf(x.note, "")), note: ((x.srcType || srcTypeOf(x.note, "")) === '見積' ? '⚠単価は見積の提示価格（' + (x.vendor || '') + ' ' + (x.date || '') + '）。実際の仕入ではありません' : '') })}>＋追加</Btn>
                 </div></td>
               </tr>);
             })}</tbody>
@@ -802,12 +1221,12 @@ function SearchTab({ q, setQ, sekisan, zairyo, settings, docs, market, onAddRow,
       {toks.length > 0 && res.h.length > 0 && (
         <Card title={"🧾 仕入履歴（単価履歴） " + res.h.length + "件"}>
           <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
-            <thead><tr><th>仕入日</th><th>仕入先</th><th>メーカ</th><th>型番</th><th>品名</th><th>数量</th><th>単位</th><th>単価</th><th>現場</th></tr></thead>
+            <thead><tr><th>仕入日</th><th>仕入先</th><th>メーカ</th><th>型番</th><th>品名</th><th>数量</th><th>単位</th><th>単価</th><th>現場</th><th>出どころ</th></tr></thead>
             <tbody>{res.h.slice(0, LIM).map((x, i) => (
               <tr key={i}>
                 <td>{x.date}</td><td className="max-w-[10rem] truncate" title={x.vendor}>{x.vendor}</td><td>{x.maker}</td><td className="font-mono">{x.model}</td>
                 <td className="max-w-[22rem] truncate" title={x.name}>{x.name}</td><td className="text-right">{x.qty}</td><td className="text-center">{x.unit}</td>
-                <td className="text-right font-semibold">{yen(x.price)}</td><td className="max-w-[12rem] truncate" title={x.site}>{x.site}</td>
+                <td className="text-right font-semibold">{yen(x.price)}</td><td className="max-w-[12rem] truncate" title={x.site}>{x.site}</td><td className="text-center"><SrcBadge t={x.srcType || '不明'} /></td>
               </tr>
             ))}</tbody>
           </table></div>
@@ -930,7 +1349,7 @@ function BulkTab({ sekisan, zairyo, settings, docs, market, state, setState, onA
       const vp = pg.getViewport({ scale: 2 });
       const c = document.createElement("canvas"); c.width = vp.width; c.height = vp.height;
       await pg.render({ canvasContext: c.getContext("2d"), viewport: vp }).promise;
-      const r = await T.recognize(c, "eng");
+      const r = await T.recognize(c, "eng", (window.__tessLocalOpts ? window.__tessLocalOpts() : {}));
       out += (r.data.text || "") + "\n";
     }
     return out;
@@ -941,7 +1360,7 @@ function BulkTab({ sekisan, zairyo, settings, docs, market, state, setState, onA
     setBusy("画像を読み取り中…（初回は辞書の取得に時間がかかります）");
     try {
       const T = await ensureTessLib();
-      const r = await T.recognize(file, "eng", { logger: (m) => { if (m && m.status) setBusy("画像を読み取り中… " + m.status + " " + Math.round((m.progress || 0) * 100) + "%"); } });
+      const r = await T.recognize(file, "eng", Object.assign((window.__tessLocalOpts ? window.__tessLocalOpts() : {}), { logger: (m) => { if (m && m.status) setBusy("画像を読み取り中… " + m.status + " " + Math.round((m.progress || 0) * 100) + "%"); } }));
       const t = (r.data.text || "");
       setText(t);
       buildFromText(t, "画像「" + file.name + "」（OCR）");
@@ -1019,7 +1438,7 @@ function BulkTab({ sekisan, zairyo, settings, docs, market, state, setState, onA
                     <td><input value={r.name} onChange={(e) => upd(r.id, "name", e.target.value)} className={inp} /></td>
                     <td><input type="number" value={r.qty} onChange={(e) => upd(r.id, "qty", e.target.value)} className={inp + " text-right"} /></td>
                     <td className="text-center text-xs">{r.res === undefined ? <span className="text-slate-400">未照合</span> : (r.res ? <span className={r.res.via === "型番一致" ? "text-emerald-700 font-semibold" : (r.res.src === "ネット価格" ? "text-sky-700 font-semibold" : "text-amber-700")}>{r.res.via}</span> : <span className="text-rose-600">未ヒット</span>)}</td>
-                    <td className="max-w-[24rem] truncate" title={r.res ? r.res.name : ""}>{r.res ? <>{r.res.name}<span className="text-xs text-slate-400 ml-1">［{r.res.src}］</span>{r.res.more > 0 ? <span className="text-xs text-slate-400">他{r.res.more}件</span> : null}</> : ""}</td>
+                    <td className="max-w-[24rem] truncate" title={r.res ? r.res.name : ""}>{r.res ? <>{r.res.name}<span className="text-xs text-slate-400 ml-1">［{r.res.src}］</span>{r.res.srcType && r.res.srcType !== '不明' ? <span className="ml-1"><SrcBadge t={r.res.srcType} /></span> : null}{r.res.more > 0 ? <span className="text-xs text-slate-400">他{r.res.more}件</span> : null}</> : ""}</td>
                     <td className="text-right font-semibold text-cyan-800">{r.res ? yen(r.res.price) : ""}</td>
                     <td className="max-w-[8rem] truncate" title={r.res ? r.res.vendor : ""}>{r.res ? r.res.vendor : ""}</td>
                     <td className="text-center"><div className="flex gap-1 justify-center">
@@ -1238,8 +1657,8 @@ function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onR
                 ? <div className="text-sm text-emerald-700">📱 スナップショット {sekisan.master.length.toLocaleString()} 件を使用中 <span className="text-xs text-slate-400">（PCの見積ソフト {sekisan.at || (sekisan.ts ? new Date(sekisan.ts).toLocaleString("ja-JP") : "")} 時点。PCのバックアップを復元すると更新されます）</span></div>
                 : <div className="text-sm text-emerald-700">✅ {sekisan.master.length.toLocaleString()} 件を読込中{sekisan.ts ? <span className="text-xs text-slate-400">（見積ソフト最終保存: {new Date(sekisan.ts).toLocaleString("ja-JP")}）</span> : null}</div>)
               : <div className="text-sm text-rose-600">⚠ 読み込めません：{sekisan.reason}<div className="text-xs text-slate-500 mt-0.5">スマホ・別PCの場合は、PCで書き出したバックアップを「バックアップから復元」すると見積マスタも入ります。</div></div>}
-            <div className="text-xs text-slate-400 mt-1">このソフトは見積ソフトのデータを読むだけで、一切書き込みません。<b>見積ソフトで仕入単価を変えると自動で追随します</b>（起動時・この画面に戻ったとき・10分ごとに読み直し）。</div>
-            <div className="mt-1.5"><Btn onClick={onReloadSekisan}>🔄 今すぐ再読込</Btn></div>
+            <div className="text-xs text-slate-400 mt-1">このソフトは見積ソフトのデータを読むだけで、一切書き込みません。<b>更新の確認は「アプリを開き直したとき」だけ</b>行い、<b>取り込む内容を表示してから、取り込むかどうかを選べます</b>（作業中に勝手に切り替わりません）。</div>
+            <div className="mt-1.5"><Btn onClick={onReloadSekisan}>🔄 見積マスタの更新を確認</Btn></div>
           </div>
           <div className="border border-slate-200 rounded p-2.5">
             <div className="font-semibold text-sm mb-1">材料マスタ.xlsx（仕入実績・単価履歴・定価・仕入先）</div>
@@ -1251,10 +1670,10 @@ function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onR
                 ? <div className="text-sm text-emerald-700 mt-0.5">🔗 自動更新：有効（{zWatch.name}）<span className="text-xs text-slate-400">{zWatch.checkedAt ? "／最終確認 " + new Date(zWatch.checkedAt).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }) : ""}</span></div>
                 : <div className="text-sm text-amber-600 mt-0.5">⚠ 自動更新：許可が切れています（{zWatch.name}）→「今すぐ確認」を押すと再許可できます</div>)
               : <div className="text-sm text-slate-500 mt-0.5">🔗 自動更新：未設定（ファイルを紐づけると、月次更新を自動で取り込みます）</div>}
-            <div className="text-xs text-slate-400 mt-1">紐づけると、<b>材料マスタ.xlsxが更新されるたびに自動で取り込みます</b>（起動時・この画面に戻ったとき・10分ごとに更新日時を確認）。元のxlsxは変更しません。</div>
+            <div className="text-xs text-slate-400 mt-1">紐づけると、<b>アプリを開き直したときに更新を確認</b>し、<b>取り込む内容を表示してから取り込むかどうかを選べます</b>。作業中に勝手に切り替わりません。元のxlsxは変更しません。</div>
             <div className="mt-1.5 flex gap-1.5 flex-wrap">
               <Btn variant="primary" onClick={onSetupZairyoWatch}>🔗 材料マスタ.xlsxを紐づけて自動更新</Btn>
-              <Btn onClick={() => onCheckZairyo(true)} disabled={!zWatch.name}>🔄 今すぐ確認</Btn>
+              <Btn onClick={() => onCheckZairyo(true)} disabled={!zWatch.name}>🔄 材料マスタの更新を確認</Btn>
               <Btn onClick={() => fileRef.current && fileRef.current.click()}>📥 1回だけ取込</Btn>
               <input ref={fileRef} type="file" accept=".xlsx" className="hidden" onChange={(e) => { if (e.target.files[0]) onImportZairyo(e.target.files[0]); e.target.value = ""; }} />
             </div>
@@ -1341,6 +1760,8 @@ function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onR
         </div>
       </Card>
 
+      <MakerRatesCard />
+
       <Card title="🎯 メーカー直リンク（URLパターン）" right={<Btn onClick={() => setSettings((s) => ({ ...s, urlPatterns: [...(s.urlPatterns || []), { id: "p" + Date.now().toString(36), name: "", maker: "", url: "", note: "" }] }))}>＋ 追加</Btn>}>
         <div className="text-xs text-slate-500 mb-1.5">
           資料の実URLを貼り、品番の部分を <b>{"{modelU}"}</b> に置き換えて登録すると、以後その形で品番ごとに直接ひらけます（<b>{"{modelU}"}</b>＝スペースを除いた大文字の品番。例「XFX450DHN LE9」→「XFX450DHNLE9」）。メーカー欄を空にすると全メーカーで表示します。
@@ -1418,23 +1839,270 @@ function SettingsTab({ settings, setSettings, sekisan, zairyo, docs, market, onR
 function HistModal({ item, history, onClose }) {
   const key = norm(item.model || "");
   const rows = (history || []).filter((h) => key ? norm(h.model) === key : norm(h.name) === norm(item.name)).sort((a, b) => String(b.date).localeCompare(String(a.date)));
+  // 上書きせず残した全記録から、いつ最安・いつ最高だったかを出す
+  const priced = rows.filter((h) => num(h.price) > 0);
+  const lo = priced.length ? priced.reduce((m, h) => (num(h.price) < num(m.price) ? h : m), priced[0]) : null;
+  const hi = priced.length ? priced.reduce((m, h) => (num(h.price) > num(m.price) ? h : m), priced[0]) : null;
+  const vendorsN = new Set(priced.map((h) => h.vendor)).size;
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full max-h-[80vh] overflow-auto p-4" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-lg shadow-xl max-w-5xl w-full max-h-[85vh] overflow-auto p-4" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center mb-2">
           <div className="font-semibold">📈 仕入履歴：{item.name} <span className="font-mono text-sm text-slate-500">{item.model}</span></div>
           <Btn variant="ghost" className="ml-auto" onClick={onClose}>✕ 閉じる</Btn>
         </div>
+        {lo && (
+          <div className="text-sm mb-2 flex gap-4 flex-wrap">
+            <span>記録 <b>{priced.length}</b>回／仕入先 <b>{vendorsN}</b>社</span>
+            <span className="text-emerald-700">★最安 <b>{yen(lo.price)}円</b> <span className="text-xs">{lo.date} {lo.vendor}</span></span>
+            {hi !== lo && <span className="text-rose-700">▲最高 <b>{yen(hi.price)}円</b> <span className="text-xs">{hi.date} {hi.vendor}</span>（差 {yen(num(hi.price) - num(lo.price))}円）</span>}
+            <span className="text-slate-500">最新（見積に使う値）: <b className="text-slate-800">{yen(rows[0].price)}円</b> <span className="text-xs">{rows[0].date} {rows[0].vendor}</span></span>
+          </div>
+        )}
         {rows.length ? (
           <table className="tbl text-sm w-full whitespace-nowrap">
-            <thead><tr><th>仕入日</th><th>仕入先</th><th>数量</th><th>単位</th><th>単価</th><th>金額</th><th>現場</th></tr></thead>
+            <thead><tr><th>仕入日</th><th>仕入先</th><th>数量</th><th>単位</th><th>単価</th><th>金額</th><th>現場</th><th>取込</th></tr></thead>
             <tbody>{rows.map((h, i) => (
-              <tr key={i}><td>{h.date}</td><td>{h.vendor}</td><td className="text-right">{h.qty}</td><td className="text-center">{h.unit}</td>
-                <td className="text-right font-semibold">{yen(h.price)}</td><td className="text-right">{yen(h.amt)}</td><td className="max-w-[14rem] truncate" title={h.site}>{h.site}</td></tr>
+              <tr key={i} className={h === lo ? "bg-emerald-50" : (h === hi && hi !== lo ? "bg-rose-50" : "")}><td>{h.date}</td><td>{h.vendor}</td><td className="text-right">{h.qty}</td><td className="text-center">{h.unit}</td>
+                <td className="text-right font-semibold">{yen(h.price)}{h === lo ? <span className="text-xs text-emerald-700 ml-1">★最安</span> : null}{h === hi && hi !== lo ? <span className="text-xs text-rose-700 ml-1">▲最高</span> : null}</td><td className="text-right">{yen(h.amt)}</td><td className="max-w-[14rem] truncate" title={h.site}>{h.site}</td>
+                <td className="text-xs text-slate-500 max-w-[14rem] truncate" title={h.src}>{h.imported ? h.imported + " " : ""}{h.src}</td></tr>
             ))}</tbody>
           </table>
         ) : <div className="text-slate-400 text-sm py-4 text-center">この品目の履歴は見つかりません</div>}
       </div>
+    </div>
+  );
+}
+
+// ================= 仕入先タブ（取り込んだ仕入価格を全部、種別ごとに見る。2026-09-18） =================
+// 「いつ・どこから・いくらで入ったか」を、上書きせず残してある単価履歴からそのまま並べる。
+// 見積に使うのは最新値だけだが、ここでは過去の記録も全部見られる（いつ最安・いつ最高だったか）。
+const shiireKey = (h) => norm(h.model || "") || ("#" + norm(h.name || ""));
+const ymd = (s) => String(s || "").slice(0, 10);
+
+function ShiireTab({ zairyo, onShowHist, onAddRow }) {
+  const [q, setQ] = useState("");
+  const [cat, setCat] = useState("");        // 分類でしぼる（空＝全部）
+  const [ven, setVen] = useState("");        // 仕入先でしぼる
+  const [mode, setMode] = useState("item");  // item=品目ごと / flat=記録を全部
+  const [openCat, setOpenCat] = useState({});
+
+  const hist = zairyo.history || [];
+  const catOf = useMemo(() => {
+    const m = {};
+    (zairyo.items || []).forEach((x) => { const k = norm(x.model || "") || ("#" + norm(x.name || "")); if (k && !m[k]) m[k] = x.cat || ""; });
+    return m;
+  }, [zairyo.items]);
+
+  // 仕入先ごとのまとめ（何件・何品目・いつからいつまで）
+  const vendors = useMemo(() => {
+    const m = {};
+    hist.forEach((h) => {
+      const v = (h.vendor || "").trim(); if (!v) return;
+      const o = m[v] || (m[v] = { name: v, n: 0, items: new Set(), min: "", max: "", amt: 0 });
+      o.n++; o.items.add(shiireKey(h));
+      const d = ymd(h.date);
+      if (d && (!o.min || d < o.min)) o.min = d;
+      if (d && (!o.max || d > o.max)) o.max = d;
+      o.amt += num(h.amt);
+    });
+    return Object.values(m).sort((a, b) => b.n - a.n);
+  }, [hist]);
+
+  const toks = useMemo(() => tokens(q), [q]);
+  const shown = useMemo(() => hist.filter((h) => {
+    if (ven && (h.vendor || "").trim() !== ven) return false;
+    const c = catOf[shiireKey(h)] || "";
+    if (cat && (c || "（分類なし）") !== cat) return false;
+    if (toks.length && !hitAll(norm([h.maker, h.model, h.name, h.vendor, h.site, c].join("␟")), toks)) return false;
+    return true;
+  }), [hist, ven, cat, toks, catOf]);
+
+  // 分類ごと → 品目ごと にまとめる
+  const grouped = useMemo(() => {
+    const items = {};
+    shown.forEach((h) => {
+      const k = shiireKey(h); if (!k || !(num(h.price) > 0)) return;
+      const it = items[k] || (items[k] = { key: k, model: h.model, name: h.name, maker: h.maker, unit: h.unit,
+                                           cat: catOf[k] || "（分類なし）", rows: [], vendors: {} });
+      it.rows.push(h);
+      const v = (h.vendor || "").trim();
+      const cur = it.vendors[v];
+      if (v && (!cur || ymd(h.date) > cur.date)) it.vendors[v] = { date: ymd(h.date), price: num(h.price) };
+    });
+    Object.values(items).forEach((it) => {
+      it.rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+      const ps = it.rows.map((r) => num(r.price)).filter((p) => p > 0);
+      it.lo = Math.min.apply(null, ps); it.hi = Math.max.apply(null, ps);
+      it.loRow = it.rows.filter((r) => num(r.price) === it.lo)[0];
+      it.hiRow = it.rows.filter((r) => num(r.price) === it.hi)[0];
+      it.newest = it.rows[0];
+      it.vs = Object.keys(it.vendors).map((n2) => ({ name: n2, ...it.vendors[n2] })).sort((a, b) => a.price - b.price);
+    });
+    const byCat = {};
+    Object.values(items).forEach((it) => { (byCat[it.cat] || (byCat[it.cat] = [])).push(it); });
+    return Object.keys(byCat).map((c) => ({
+      cat: c, items: byCat[c].sort((a, b) => String(a.model || a.name).localeCompare(String(b.model || b.name))),
+      n: byCat[c].reduce((a, it) => a + it.rows.length, 0),
+    })).sort((a, b) => b.items.length - a.items.length);
+  }, [shown, catOf]);
+
+  const catList = useMemo(() => {
+    const m = {};
+    hist.forEach((h) => { const c = catOf[shiireKey(h)] || "（分類なし）"; m[c] = (m[c] || 0) + 1; });
+    return Object.keys(m).map((c) => ({ cat: c, n: m[c] })).sort((a, b) => b.n - a.n);
+  }, [hist, catOf]);
+
+  // 開いている種別かどうか。種別をしぼったとき・種別が少ないときは最初から開く
+  const isOpen = (g) => (openCat[g.cat] !== undefined ? !!openCat[g.cat] : (!!cat || grouped.length <= 3));
+  const flat = useMemo(() => shown.slice().sort((a, b) => String(b.date).localeCompare(String(a.date))), [shown]);
+  const FLIM = 400;
+
+  const toCsv = () => {
+    const head = ["仕入日", "仕入先", "分類", "メーカ", "型番", "品名", "数量", "単位", "単価", "金額", "現場", "取込日", "出典"];
+    const esc = (v) => '"' + String(v == null ? "" : v).replace(/"/g, '""') + '"';
+    const body = flat.map((h) => [ymd(h.date), h.vendor, catOf[shiireKey(h)] || "", h.maker, h.model, h.name,
+                                  h.qty, h.unit, num(h.price) || "", num(h.amt) || "", h.site, h.imported || "", h.src || ""].map(esc).join(","));
+    const blob = new Blob(["﻿" + [head.map(esc).join(",")].concat(body).join("\r\n")], { type: "text/csv" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "仕入価格の記録_" + ymdStr() + ".csv";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  };
+
+  if (!hist.length) {
+    return <Card title="🏪 仕入先の記録">
+      <div className="text-sm text-slate-500">まだ仕入の記録がありません。設定タブで <b>材料マスタ.xlsx</b> を取り込むと、単価履歴（いつ・どこから・いくらで入ったか）がここに出ます。</div>
+    </Card>;
+  }
+
+  return (
+    <div className="space-y-3">
+      <Card title={"🏪 仕入先ごとの実績（記録 " + hist.length.toLocaleString() + " 行）"}
+        right={<Btn onClick={toCsv} title="いま出ている記録をCSVにする">⬇ CSVに出す</Btn>}>
+        <div className="flex gap-2 flex-wrap">
+          {vendors.map((v) => (
+            <button key={v.name} type="button" onClick={() => setVen(ven === v.name ? "" : v.name)}
+              className={"text-left border rounded px-2.5 py-1.5 " + (ven === v.name ? "border-cyan-500 bg-cyan-50" : "border-slate-200 hover:bg-slate-50")}>
+              <div className="font-semibold text-sm">{v.name}</div>
+              <div className="text-xs text-slate-500">{v.n.toLocaleString()}行 ／ {v.items.size}品目<br />{v.min} 〜 {v.max}</div>
+            </button>
+          ))}
+          {ven && <Btn variant="ghost" onClick={() => setVen("")}>✕ 仕入先のしぼり込みを外す</Btn>}
+        </div>
+        <div className="text-xs text-slate-400 mt-2">仕入先を押すとその会社の分だけになります。金額は取り込んだ見積・請求の単価そのままで、<b>上書きせず全部残しています</b>。</div>
+      </Card>
+
+      <Card>
+        <div className="flex gap-2 items-center flex-wrap">
+          <span className="text-lg">🔍</span>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="型番・品名・メーカ・現場でしぼる（空白区切りでAND）"
+            className="flex-1 min-w-[240px] border border-slate-300 rounded px-2.5 py-1.5 text-sm" />
+          {q && <Btn variant="ghost" onClick={() => setQ("")}>✕</Btn>}
+          <div className="flex gap-1">
+            <Btn variant={mode === "item" ? "primary" : "sub"} onClick={() => setMode("item")}>品目ごと</Btn>
+            <Btn variant={mode === "flat" ? "primary" : "sub"} onClick={() => setMode("flat")}>記録を全部</Btn>
+          </div>
+        </div>
+        <div className="mt-2 flex gap-1 flex-wrap items-center">
+          <span className="text-xs text-slate-500 mr-1">種別：</span>
+          <button type="button" onClick={() => setCat("")}
+            className={"text-xs px-2 py-0.5 rounded border " + (!cat ? "bg-cyan-700 text-white border-cyan-700" : "bg-white border-slate-300 text-slate-600 hover:bg-slate-50")}>全部</button>
+          {catList.map((c) => (
+            <button key={c.cat} type="button" onClick={() => setCat(cat === c.cat ? "" : c.cat)}
+              className={"text-xs px-2 py-0.5 rounded border " + (cat === c.cat ? "bg-cyan-700 text-white border-cyan-700" : "bg-white border-slate-300 text-slate-600 hover:bg-slate-50")}>
+              {c.cat}<span className="opacity-60 ml-0.5">{c.n}</span>
+            </button>
+          ))}
+        </div>
+        <div className="text-sm text-slate-600 mt-2">
+          いま出ている記録 <b className="text-cyan-700">{shown.length.toLocaleString()}</b> 行 ／ 品目 <b className="text-cyan-700">{grouped.reduce((a, g) => a + g.items.length, 0).toLocaleString()}</b> 種 ／ 種別 {grouped.length}
+        </div>
+      </Card>
+
+      {mode === "item" && grouped.length > 1 && (
+        <div className="flex gap-1.5 flex-wrap items-center text-sm">
+          <span className="text-slate-500 text-xs">種別 {grouped.length} 件：</span>
+          <Btn onClick={() => { const o = {}; grouped.forEach((g) => { o[g.cat] = true; }); setOpenCat(o); }}>全部ひらく</Btn>
+          <Btn onClick={() => { const o = {}; grouped.forEach((g) => { o[g.cat] = false; }); setOpenCat(o); }}>全部たたむ</Btn>
+          <span className="text-xs text-slate-400">見出しを押すと開きます</span>
+        </div>
+      )}
+      {mode === "item" ? grouped.filter(isOpen).map((g) => {
+        const open = true;
+        const LIM = 8;
+        const list = g.items;
+        const more = openCat[g.cat + "␟more"] === true;
+        const view = more ? list : list.slice(0, LIM);
+        return (
+          <Card key={g.cat} className="cursor-default"
+            title={<span className="cursor-pointer select-none" onClick={() => setOpenCat((o) => ({ ...o, [g.cat]: !open }))}>{(open ? "▼ " : "▶ ") + g.cat}<span className="font-normal text-slate-500 text-sm">（{g.items.length}品目 ／ 記録 {g.n}行）</span></span>}
+            right={<Btn variant="ghost" onClick={() => setOpenCat((o) => ({ ...o, [g.cat]: !open }))}>{open ? "たたむ" : "ひらく"}</Btn>}>
+            {open && <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
+              <thead><tr><th>型番</th><th>品名</th><th>単位</th><th>仕入先ごとの最新単価</th><th>いちばん安かった</th><th>いちばん高かった</th><th>記録</th><th></th></tr></thead>
+              <tbody>{view.map((it) => (
+                <tr key={it.key} className="hover:bg-cyan-50 align-top">
+                  <td className="font-mono">{it.model}</td>
+                  <td className="max-w-[20rem] truncate" title={it.name}>{it.name}</td>
+                  <td className="text-center">{it.unit}</td>
+                  <td>{it.vs.map((v, i) => (
+                    <div key={v.name} className={i === 0 && it.vs.length > 1 ? "text-emerald-700 font-semibold" : "text-slate-700"}>
+                      {i === 0 && it.vs.length > 1 ? "★" : ""}{v.name} {yen(v.price)}円 <span className="text-xs text-slate-500">{v.date}</span>
+                    </div>
+                  ))}</td>
+                  <td className="text-right text-emerald-700">{yen(it.lo)}円<div className="text-xs text-slate-500">{ymd(it.loRow.date)} {it.loRow.vendor}</div></td>
+                  <td className="text-right text-rose-700">{it.hi !== it.lo ? <React.Fragment>{yen(it.hi)}円<div className="text-xs text-slate-500">{ymd(it.hiRow.date)} {it.hiRow.vendor}</div></React.Fragment> : <span className="text-slate-300">—</span>}</td>
+                  <td className="text-center">{it.rows.length}回</td>
+                  <td className="text-center"><div className="flex gap-1">
+                    <Btn variant="ghost" title="この品目の記録を全部見る" onClick={() => onShowHist({ name: it.name, model: it.model })}>📈</Btn>
+                    <Btn variant="primary" title="いちばん安い仕入先・単価で見積に追加" onClick={() => onAddRow({ name: it.name, model: it.model, maker: it.maker || "", vendor: it.vs[0] ? it.vs[0].name : "", catName: it.cat, unit: it.unit, cost: it.vs[0] ? it.vs[0].price : num(it.newest.price) })}>＋</Btn>
+                  </div></td>
+                </tr>
+              ))}</tbody>
+            </table></div>}
+            {open && list.length > LIM && (
+              <div className="mt-1"><Btn variant="ghost" onClick={() => setOpenCat((o) => ({ ...o, [g.cat + "␟more"]: !more }))}>
+                {more ? "…少なく表示" : "…ほか " + (list.length - LIM) + " 品目を見る"}</Btn></div>
+            )}
+          </Card>
+        );
+      }) : null}
+
+      {/* たたんである種別は横に並べる。50種あっても1画面ほどに収まり、下へのスクロールが減る */}
+      {mode === "item" && grouped.filter((g) => !isOpen(g)).length > 0 && (
+        <div className="grid gap-1.5" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(225px, 1fr))" }}>
+          {grouped.filter((g) => !isOpen(g)).map((g) => (
+            <button key={g.cat} type="button" onClick={() => setOpenCat((o) => ({ ...o, [g.cat]: true }))}
+              className="text-left bg-white border border-slate-200 rounded px-2 py-1.5 hover:bg-cyan-50 hover:border-cyan-300">
+              <div className="text-sm font-semibold text-slate-700 truncate" title={g.cat}>▶ {g.cat}</div>
+              <div className="text-xs text-slate-500">{g.items.length}品目 ／ 記録 {g.n}行</div>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {mode === "flat" && (
+        <Card title={"🧾 取り込んだ記録（新しい順） " + flat.length.toLocaleString() + "行"}>
+          <div className="overflow-x-auto"><table className="tbl text-sm w-full whitespace-nowrap">
+            <thead><tr><th>仕入日</th><th>仕入先</th><th>種別</th><th>メーカ</th><th>型番</th><th>品名</th><th>数量</th><th>単位</th><th>単価</th><th>金額</th><th>現場</th><th>取込・出典</th></tr></thead>
+            <tbody>{flat.slice(0, FLIM).map((h, i) => (
+              <tr key={i} className="hover:bg-cyan-50">
+                <td>{ymd(h.date)}</td><td className="max-w-[9rem] truncate" title={h.vendor}>{h.vendor}</td>
+                <td className="max-w-[10rem] truncate">{catOf[shiireKey(h)] || ""}</td>
+                <td>{h.maker}</td><td className="font-mono">{h.model}</td>
+                <td className="max-w-[20rem] truncate" title={h.name}>{h.name}</td>
+                <td className="text-right">{h.qty}</td><td className="text-center">{h.unit}</td>
+                <td className="text-right font-semibold">{yen(h.price)}</td><td className="text-right text-slate-500">{yen(h.amt)}</td>
+                <td className="max-w-[10rem] truncate" title={h.site}>{h.site}</td>
+                <td className="text-xs text-slate-500 max-w-[16rem] truncate" title={(h.imported || "") + " " + (h.src || "")}>{h.imported ? h.imported + " " : ""}{h.src}</td>
+              </tr>
+            ))}</tbody>
+          </table></div>
+          {flat.length > FLIM && <div className="text-xs text-slate-400 mt-1">他 {(flat.length - FLIM).toLocaleString()} 行（しぼり込むか「CSVに出す」で全部見られます）</div>}
+        </Card>
+      )}
+      <div className="text-xs text-slate-400">※ 単価は取り込んだ見積・請求に書いてあったそのままの値です。日付が古い物は相場が動いている可能性があるので、使う前に仕入先へ確かめてください。</div>
     </div>
   );
 }
@@ -1446,11 +2114,13 @@ function App() {
   const [q, setQ] = useState("");
   const [netQ, setNetQ] = useState(""); const [netEdited, setNetEdited] = useState(false);
   const [sekisan, setSekisan] = useState({ ok: false, master: [], reason: "読込中…" });
-  const [zairyo, setZairyo] = useState({ items: [], history: [], importedAt: "", fileName: "" });
+  const [zairyo, setZairyoRaw] = useState({ items: [], history: [], importedAt: "", fileName: "" });
+  const setZairyo = useCallback((z) => setZairyoRaw((prev) => zairyoWithSrc(typeof z === "function" ? z(prev) : z)), []);
   const [cases, setCases] = useState([]);
   const [cur, setCur] = useState(() => blankCase());
   const [settings, setSettings] = useState(() => ({ ...DEFAULT_SETTINGS }));
   const [bulkState, setBulkState] = useState({ text: "", rows: [], srcInfo: "" }); // まとめて検索の作業内容（タブ移動で消えないよう App が保持）
+  const declinedRef = useRef({});                // 取り込まないと決めた行の覚え（マスタ更新の確認で使う）
   const [docs, setDocs] = useState({});          // 品目キー→資料リンク配列（カタログ/仕様書/姿図）
   const [market, setMarket] = useState({});      // ネット価格DB：品目キー→{model,name,maker,unit,adoptedId,entries[]}
   const [priceItem, setPriceItem] = useState(null); // {item, onAdopt}
@@ -1459,7 +2129,8 @@ function App() {
   const [zWatch, setZWatch] = useState({ name: "", ready: false, checkedAt: 0 });
   const mpackHandleRef = useRef(null);
   const [mpack, setMpack] = useState({ name: "", ready: false, lastWrite: 0 });
-  const [updateNotice, setUpdateNotice] = useState(null); // マスタが自動更新されたときの通知
+  const [updateNotice, setUpdateNotice] = useState(null); // マスタを更新したときの通知
+  const [pendingUpdates, setPendingUpdates] = useState([]); // 取り込み待ちのマスタ更新（起動時・手動確認で積む）
   const [docsItem, setDocsItem] = useState(null);
   const [histItem, setHistItem] = useState(null);
   const [preview, setPreview] = useState(false);
@@ -1481,16 +2152,33 @@ function App() {
   const latestRef = useRef({}); latestRef.current = { cases, cur, settings, zairyo, docs, market, sekisan };
 
   // ---- 起動読込 ----
+  // 承認済みの見積マスタ（このアプリが実際に使うマスタ。取り込みOKを出した時点の内容）
+  const readApprovedSekisan = async () => {
+    try { const sn = await window.storage.get(KEY_SEKISAN_SNAP); if (sn && sn.value) { const d = JSON.parse(sn.value); if (d && d.master && d.master.length) return d; } } catch (e) {}
+    return null;
+  };
+  const saveApprovedSekisan = async (master, ts) => {
+    const at = new Date().toLocaleString("ja-JP");
+    await window.storage.set(KEY_SEKISAN_SNAP, JSON.stringify({ master, ts: ts || 0, at }));
+    return at;
+  };
+  // 見積ソフトのマスタに更新があるか調べる（取り込みはしない）。差分があれば確認用の項目を返す
+  const buildSekisanPending = async (curMaster) => {
+    const live = await window.readSekisanMaster();
+    if (!live.ok) return null;
+    const d = dropDeclined(diffMasterLists(curMaster || [], live.master, sekisanKey, (x) => x.mat, sekisanLabel), declinedRef.current.sekisan);
+    if (!hasMasterDiff(d)) return null;
+    return { id: "sekisan", kind: "sekisan", title: "見積ソフトのマスタ（仕入単価）", sub: "見積ソフトの最終保存：" + (live.ts ? new Date(live.ts).toLocaleString("ja-JP") : "—"), diff: d, payload: { master: live.master, ts: live.ts } };
+  };
   const loadSekisan = useCallback(async () => {
-    const r = await window.readSekisanMaster();
-    if (r.ok) { setSekisan({ ok: true, master: r.master, ts: r.ts, snap: false }); return r; }
-    // 直読できない（スマホ・別PC）→ バックアップに同梱された見積マスタのスナップショットを使う
-    try {
-      const sn = await window.storage.get(KEY_SEKISAN_SNAP);
-      if (sn && sn.value) { const d = JSON.parse(sn.value); if (d && d.master && d.master.length) { setSekisan({ ok: true, master: d.master, ts: d.ts, snap: true, at: d.at || "" }); return { ok: true, snap: true }; } }
-    } catch (e) {}
-    setSekisan({ ok: false, master: [], reason: r.reason });
-    return r;
+    // 手動の「更新を確認」。差分があれば確認モーダルを出す（勝手には切り替えない）
+    const cur = latestRef.current.sekisan || {};
+    const live = await window.readSekisanMaster();
+    if (!live.ok) { alert("見積ソフトのデータを読めません：" + live.reason); return live; }
+    const p = await buildSekisanPending(cur.master || []);
+    if (!p) { alert("見積ソフトのマスタに更新はありません（" + live.master.length.toLocaleString() + " 件）。"); return live; }
+    setPendingUpdates((ps) => [...ps.filter((x) => x.id !== "sekisan"), p]);
+    return live;
   }, []);
   useEffect(() => {
     (async () => {
@@ -1501,6 +2189,23 @@ function App() {
         let mainD = null;
         if (m && m.value) { try { mainD = JSON.parse(m.value); } catch (e) {} }
         const curTs = (mainD && mainD.ts) || 0;
+        // ★データ金庫からの復旧（2026-09-12・許可不要）：ブラウザ側が空 or 金庫の方が新しいときだけ戻す
+        try {
+          if (window.Vault && String(location.protocol).indexOf("http") === 0) {
+            const g = await window.Vault.load("価格調査_全データ.json", { app: "kakaku" });
+            if (g && g.ok && g.text) {
+              const d = JSON.parse(g.text);
+              if (d && d.app === "kakaku_chousa_full" && d.main && !payloadEmpty(d) && ((d.ts || 0) > curTs || curTs === 0)) {
+                await applyBackupObj(d);
+                mainD = { version: 1, ...d.main, ts: d.ts || Date.now() };
+                if (d.zairyo && d.zairyo.items) setZairyo(d.zairyo);
+                if (d.docs) setDocs(d.docs);
+                if (d.market) setMarket(d.market);
+                setAutoRestored({ savedAt: (d.savedAt || "") + "（データ金庫）" });
+              }
+            }
+          }
+        } catch (e) {}
         // === 自動保存ファイル(FSA)からの起動時自動復元：IDBが飛んでも自己回復。ファイルが新しい/現データ消失時のみ＝新しいローカル編集を誤って戻さない ===
         if (fsSupported) {
           try {
@@ -1559,12 +2264,15 @@ function App() {
         setCases(merged);
         lastGenRef.current = { count: merged.length };
         if (recovered > 0) setRecoveryNotice({ recovered });
+        let zairyoData = null;
         const z = await window.storage.get(KEY_ZAIRYO);
-        if (z && z.value) { try { const d = JSON.parse(z.value); if (d && d.items) setZairyo(d); } catch (e) {} }
+        if (z && z.value) { try { const d = JSON.parse(z.value); if (d && d.items) { zairyoData = d; setZairyo(d); } } catch (e) {} }
         const dk = await window.storage.get(KEY_DOCS);
         if (dk && dk.value) { try { const d = JSON.parse(dk.value); if (d && typeof d === "object") setDocs(d); } catch (e) {} }
         const mk = await window.storage.get(KEY_MARKET);
         if (mk && mk.value) { try { const d = JSON.parse(mk.value); if (d && typeof d === "object") setMarket(d); } catch (e) {} }
+        const dc = await window.storage.get(KEY_DECLINE);   // 「取り込まない」と決めた行の覚え
+        if (dc && dc.value) { try { const d = JSON.parse(dc.value); if (d && typeof d === "object") declinedRef.current = d; } catch (e) {} }
         // 材料マスタ.xlsx の紐づけ／マスタ配信ファイルのハンドルを復元（権限は後で確認）
         try {
           const zh = await idbRawGet(ZAIRYO_HANDLE_KEY);
@@ -1572,7 +2280,43 @@ function App() {
           const mh = await idbRawGet(MPACK_HANDLE_KEY);
           if (mh) { mpackHandleRef.current = mh; let p2 = "prompt"; try { p2 = await mh.queryPermission({ mode: "readwrite" }); } catch (e) {} setMpack({ name: mh.name || "", ready: p2 === "granted", lastWrite: parseInt(localStorage.getItem("kakaku_mpack_last") || "0", 10) || 0 }); }
         } catch (e) {}
-        await loadSekisan();
+        // === マスタの更新確認は「アプリを開いたとき」だけ。作業中に勝手に切り替えない ===
+        const pend = [];
+        // 見積ソフトのマスタ：承認済みの内容を使い、新しいものがあれば確認モーダルに回す
+        const approved = await readApprovedSekisan();
+        const live = await window.readSekisanMaster();
+        if (live.ok) {
+          if (!approved) { // 初回だけは確認なしで採用（比べる相手が無いため）
+            const at = await saveApprovedSekisan(live.master, live.ts);
+            setSekisan({ ok: true, master: live.master, ts: live.ts, snap: false, at });
+          } else {
+            setSekisan({ ok: true, master: approved.master, ts: approved.ts, snap: false, at: approved.at || "" });
+            const d = dropDeclined(diffMasterLists(approved.master, live.master, sekisanKey, (x) => x.mat, sekisanLabel), declinedRef.current.sekisan);
+            if (hasMasterDiff(d)) pend.push({ id: "sekisan", kind: "sekisan", title: "見積ソフトのマスタ（仕入単価）", sub: "見積ソフトの最終保存：" + (live.ts ? new Date(live.ts).toLocaleString("ja-JP") : "—"), diff: d, payload: { master: live.master, ts: live.ts } });
+          }
+        } else if (approved) {
+          setSekisan({ ok: true, master: approved.master, ts: approved.ts, snap: true, at: approved.at || "" });
+        } else {
+          setSekisan({ ok: false, master: [], reason: live.reason });
+        }
+        // 材料マスタ.xlsx：紐づけ済みならファイルの更新を確認（取り込みは承認後）
+        try {
+          const zh2 = zairyoHandleRef.current;
+          if (zh2) {
+            let pm = "prompt"; try { pm = await zh2.queryPermission({ mode: "read" }); } catch (e) {}
+            if (pm === "granted") {
+              const f = await zh2.getFile();
+              if ((f.lastModified || 0) !== ((zairyoData && zairyoData.lastMod) || 0)) {
+                const nd = parseZairyoXlsx(await f.arrayBuffer(), f.name); nd.lastMod = f.lastModified || 0;
+                const d2 = dropDeclined(diffMasterLists((zairyoData && zairyoData.items) || [], nd.items, zairyoKey, (x) => x.price, zairyoLabel), declinedRef.current.zairyo);
+                if (hasMasterDiff(d2)) pend.push({ id: "zairyo", kind: "zairyo", title: "材料マスタ.xlsx（仕入実績）", sub: "ファイルの更新：" + new Date(f.lastModified || 0).toLocaleString("ja-JP"), diff: d2, payload: nd });
+                else { await window.storage.set(KEY_ZAIRYO, JSON.stringify(nd)); setZairyo(nd); } // 中身が同じなら黙って日時だけ合わせる
+              }
+              setZWatch((w) => ({ ...w, ready: true, checkedAt: Date.now() }));
+            }
+          }
+        } catch (e) {}
+        if (pend.length) setPendingUpdates(pend);
       } finally { setLoaded(true); }
     })();
   }, []);
@@ -1584,12 +2328,13 @@ function App() {
     const t = setTimeout(async () => {
       try { await window.storage.set(KEY_MAIN, JSON.stringify({ version: 1, cases, cur, settings, ts: Date.now() })); setSaveState("保存済 " + new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })); }
       catch (e) { setSaveState("保存失敗"); }
+      vaultWrite("auto");   // ★データ金庫にも
     }, 600);
     return () => clearTimeout(t);
   }, [cases, cur, settings, loaded]);
 
   // 資料リンクの永続化（案件データとは別キー。バックアップには同梱される）
-  useEffect(() => { if (!loaded) return; window.storage.set(KEY_DOCS, JSON.stringify(docs)).catch(() => {}); }, [docs, loaded]);
+  useEffect(() => { if (!loaded) return; window.storage.set(KEY_DOCS, JSON.stringify(docs)).catch(() => {}); vaultWrite("docs"); }, [docs, loaded]);
   const saveDocs = (key, list) => setDocs((prev) => { const n = { ...prev }; if (!list || !list.length) delete n[key]; else n[key] = list; return n; });
   // ネット価格DBの永続化
   useEffect(() => { if (!loaded) return; window.storage.set(KEY_MARKET, JSON.stringify(market)).catch(() => {}); }, [market, loaded]);
@@ -1606,6 +2351,27 @@ function App() {
     if (d.docs) await window.storage.set(KEY_DOCS, JSON.stringify(d.docs));
     if (d.market) await window.storage.set(KEY_MARKET, JSON.stringify(d.market));
     if (d.sekisanSnap && d.sekisanSnap.master && d.sekisanSnap.master.length) await window.storage.set(KEY_SEKISAN_SNAP, JSON.stringify(d.sekisanSnap)); // スマホ等で見積マスタを検索できるように
+  };
+  // ★データ金庫（2026-09-12）：ドライブのファイルへ直接書く。許可クリック不要なので止まらない。
+  // 最後の変更から8秒後にまとめて書く。空データでは書かない（サーバー側にも縮小の歯止めあり）。
+  const vaultTimerRef = useRef(null); const vaultBusyRef = useRef(false);
+  const vaultWrite = (reason) => {
+    if (!window.Vault || String(location.protocol).indexOf("http") !== 0) return;
+    clearTimeout(vaultTimerRef.current);
+    vaultTimerRef.current = setTimeout(async () => {
+      if (vaultBusyRef.current) { vaultWrite(reason); return; }
+      vaultBusyRef.current = true;
+      try {
+        const payload = buildBackupPayload();
+        if (payloadEmpty(payload)) { console.log("[データ金庫] 中身が空なので書きません"); return; }
+        // 見積マスタの写し(sekisanSnap)は金庫に入れない：有無で容量が10倍変わり、縮小の歯止めに掛かって書けなくなる。PCでは見積マスタを直読できるので不要
+        const { sekisanSnap, ...vp } = payload;
+        const r = await window.Vault.save("価格調査_全データ.json", JSON.stringify(vp), { app: "kakaku" });
+        console.log("[データ金庫] 結果:", JSON.stringify(r).slice(0, 200));
+        if (r && r.ok) { const now = Date.now(); setFsLastWrite(now); lsSet("kakaku_fs_last_write", String(now)); }
+        else if (r && r.shrink) console.warn("[データ金庫] 中身が急に減ったため書き込みを止めました:", r.error);
+      } catch (e) { console.warn("[データ金庫] 例外:", e && e.message || e); } finally { vaultBusyRef.current = false; }
+    }, 8000);
   };
   // FSA自動保存：データ変更のたび設定済みファイルへ書き出し。失敗（権限失効等）は停止して再有効化を促す＝無限リトライしない
   const fsWrite = async (reason) => {
@@ -1745,7 +2511,7 @@ function App() {
       alert("材料マスタを紐づけました。以後このファイルが更新されると、起動時や画面に戻ったときに自動で取り込みます。");
     } catch (e) { if (e && e.name !== "AbortError") alert("紐づけに失敗しました：" + ((e && e.message) || e)); }
   };
-  // 紐づけたファイルの更新日時を見て、変わっていれば自動再取込
+  // 紐づけたファイルの更新を確認（取り込みは確認モーダルで承認してから）
   const checkZairyoUpdate = useCallback(async (manual) => {
     const h = zairyoHandleRef.current;
     if (!h) { if (manual) setupZairyoWatch(); return; }
@@ -1754,18 +2520,71 @@ function App() {
       if (p !== "granted" && manual) { try { p = await h.requestPermission({ mode: "read" }); } catch (e) {} }
       if (p !== "granted") { setZWatch((w) => ({ ...w, ready: false })); if (manual) alert("読み取りの許可が必要です。もう一度お試しください。"); return; }
       const f = await h.getFile();
-      const cur = (latestRef.current.zairyo && latestRef.current.zairyo.lastMod) || 0;
-      if ((f.lastModified || 0) !== cur) await doImportZairyo(f, true);
+      const cur = latestRef.current.zairyo || null;
       setZWatch({ name: h.name, ready: true, checkedAt: Date.now() });
+      if ((f.lastModified || 0) === ((cur && cur.lastMod) || 0)) { if (manual) alert("材料マスタ.xlsx に更新はありません。"); return; }
+      const nd = parseZairyoXlsx(await f.arrayBuffer(), f.name); nd.lastMod = f.lastModified || 0;
+      const d = dropDeclined(diffMasterLists((cur && cur.items) || [], nd.items, zairyoKey, (x) => x.price, zairyoLabel), declinedRef.current.zairyo);
+      if (!hasMasterDiff(d)) { await window.storage.set(KEY_ZAIRYO, JSON.stringify(nd)); setZairyo(nd); if (manual) alert("材料マスタ.xlsx に、まだ見ていない変更はありませんでした。"); return; }
+      setPendingUpdates((ps) => [...ps.filter((x) => x.id !== "zairyo"), { id: "zairyo", kind: "zairyo", title: "材料マスタ.xlsx（仕入実績）", sub: "ファイルの更新：" + new Date(f.lastModified || 0).toLocaleString("ja-JP"), diff: d, payload: nd }]);
     } catch (e) { setZWatch((w) => ({ ...w, ready: false })); if (manual) alert("確認に失敗しました：" + ((e && e.message) || e)); }
   }, []);
+  // 確認モーダルで承認された更新を実際に取り込む。picks があれば選ばれた行だけ入れる（2026-09-18）
+  const applyPending = async (ids, picks) => {
+    const list = pendingUpdates.filter((p) => ids.indexOf(p.id) >= 0);
+    const memo = Object.assign({}, declinedRef.current);
+    let gyou = 0;
+    for (const p of list) {
+      try {
+        const pick = picks && picks[p.id];
+        const chosen = (k) => !pick || pick.has(k);
+        // 選ばなかった行は「見送り」として覚える（その品目の中身が次に変わるまで、もう聞かない）
+        const mine = Object.assign({}, memo[p.id] || {});
+        [["a", p.diff.added], ["c", p.diff.changed], ["r", p.diff.removed]].forEach(([kind, rows]) => {
+          rows.forEach((r) => {
+            if (chosen(r.key)) { delete mine[r.key]; gyou++; } else { mine[r.key] = rowSig(kind, r); }
+          });
+        });
+        memo[p.id] = mine;
+
+        if (p.kind === "sekisan") {
+          const base = (latestRef.current.sekisan && latestRef.current.sekisan.master) || [];
+          const master = pick ? mergePicked(base, p.diff, sekisanKey, chosen) : p.payload.master;
+          const at = await saveApprovedSekisan(master, p.payload.ts);
+          setSekisan({ ok: true, master, ts: p.payload.ts, snap: false, at });
+        } else if (p.kind === "zairyo") {
+          let pay = p.payload;
+          if (pick) {
+            const base = (latestRef.current.zairyo && latestRef.current.zairyo.items) || [];
+            pay = Object.assign({}, p.payload, { items: mergePicked(base, p.diff, zairyoKey, chosen) });
+          }
+          setZairyo(pay); await window.storage.set(KEY_ZAIRYO, JSON.stringify(pay));
+        } else if (p.kind === "pack") {
+          if (p.payload.makerRates && typeof p.payload.makerRates === "object") makerRatesHaishinSave(p.payload.makerRates);   // 配信で届いた仕入掛率
+          if (p.payload.zairyo) { setZairyo(p.payload.zairyo); await window.storage.set(KEY_ZAIRYO, JSON.stringify(p.payload.zairyo)); }
+          if (p.payload.sekisanSnap) {
+            await window.storage.set(KEY_SEKISAN_SNAP, JSON.stringify(p.payload.sekisanSnap));
+            const sn = p.payload.sekisanSnap;
+            setSekisan({ ok: true, master: sn.master, ts: sn.ts, snap: true, at: sn.at || "" });
+          }
+        }
+      } catch (e) { alert("取り込みに失敗しました：" + ((e && e.message) || e)); }
+    }
+    declinedRef.current = memo;
+    try { await window.storage.set(KEY_DECLINE, JSON.stringify(memo)); } catch (e) {}
+    setPendingUpdates([]);
+    if (list.length) setUpdateNotice({ msg: "マスタを取り込みました（" + gyou + "行／" + list.map((p) => p.title).join("／") + "）", at: new Date().toLocaleString("ja-JP") });
+  };
+  const skipPending = () => { setPendingUpdates([]); setUpdateNotice({ msg: "今回は取り込みませんでした（設定タブの「更新を確認」からいつでも取り込めます）", at: new Date().toLocaleString("ja-JP") }); };
   // ===== マスタ配信（スマホ・別PCへ渡す。案件やネット価格は含めない） =====
   const buildMasterPack = () => {
     const L = latestRef.current;
     const sk = L.sekisan;
     return { version: 1, app: "kakaku_master_pack", savedAt: new Date().toLocaleString("ja-JP"), ts: Date.now(),
       zairyo: L.zairyo && L.zairyo.items && L.zairyo.items.length ? L.zairyo : undefined,
-      sekisanSnap: (sk && sk.ok && sk.master && sk.master.length) ? { master: sk.master, ts: sk.ts || 0, at: sk.snap ? (sk.at || "") : new Date().toLocaleString("ja-JP") } : undefined };
+      sekisanSnap: (sk && sk.ok && sk.master && sk.master.length) ? { master: sk.master, ts: sk.ts || 0, at: sk.snap ? (sk.at || "") : new Date().toLocaleString("ja-JP") } : undefined,
+      // メーカー別の仕入掛率（本体HTMLには載せない数字。配信ファイル＝ドライブ経由でスマホ・別PCへ渡す）
+      makerRates: (() => { const r = makerRatesLoad(); return Object.keys(r).length ? r : undefined; })() };
   };
   const masterPackEmpty = (p) => !((p.zairyo && p.zairyo.items && p.zairyo.items.length) || (p.sekisanSnap && p.sekisanSnap.master && p.sekisanSnap.master.length));
   const exportMasterPack = () => {
@@ -1798,43 +2617,30 @@ function App() {
     const reader = new FileReader();
     reader.onload = async (e) => {
       let d; try { d = JSON.parse(e.target.result); } catch { alert("ファイルの読み込みに失敗しました。"); return; }
+      const d0 = d;
       const isPack = d && d.app === "kakaku_master_pack";
       const isFull = d && d.app === "kakaku_chousa_full";
       if (!isPack && !isFull) { alert("マスタ配信ファイル（または全データバックアップ）ではありません。"); return; }
       const zr = d.zairyo && d.zairyo.items && d.zairyo.items.length ? d.zairyo : null;
       const sn = d.sekisanSnap && d.sekisanSnap.master && d.sekisanSnap.master.length ? d.sekisanSnap : null;
       if (!zr && !sn) { alert("このファイルにマスタが含まれていません。"); return; }
-      const parts = [zr ? "材料マスタ " + zr.items.length + " 品目" : "", sn ? "見積マスタ " + sn.master.length + " 件" : ""].filter(Boolean).join("／");
-      if (!window.confirm("マスタだけを更新します（案件・ネット価格・設定はそのまま）。\n\n" + parts + "\n\nよろしいですか？")) return;
-      try {
-        if (zr) { await window.storage.set(KEY_ZAIRYO, JSON.stringify(zr)); setZairyo(zr); }
-        if (sn) { await window.storage.set(KEY_SEKISAN_SNAP, JSON.stringify(sn)); if (!(latestRef.current.sekisan && latestRef.current.sekisan.ok && !latestRef.current.sekisan.snap)) setSekisan({ ok: true, master: sn.master, ts: sn.ts, snap: true, at: sn.at || "" }); }
-        setUpdateNotice({ msg: "マスタを更新しました（" + parts + "）", at: new Date().toLocaleString("ja-JP") });
-      } catch (er) { alert("更新に失敗しました：" + er); }
+      // 何を取り込むかを確認モーダルで見せてから反映（案件・ネット価格・設定は触らない）
+      const L = latestRef.current;
+      const pend = [];
+      if (zr) {
+        const d = diffMasterLists((L.zairyo && L.zairyo.items) || [], zr.items, zairyoKey, (x) => x.price, zairyoLabel);
+        pend.push({ id: "pack-zairyo", kind: "pack", title: "材料マスタ（配信ファイルから）", sub: "配信ファイルの作成：" + (d0.savedAt || ""), diff: d, payload: { zairyo: zr, makerRates: d0.makerRates } });
+      }
+      if (sn) {
+        const d = diffMasterLists(((L.sekisan && L.sekisan.master) || []), sn.master, sekisanKey, (x) => x.mat, sekisanLabel);
+        pend.push({ id: "pack-sekisan", kind: "pack", title: "見積マスタ（配信ファイルから）", sub: "PCの見積ソフト " + (sn.at || "") + " 時点", diff: d, payload: { sekisanSnap: sn, makerRates: d0.makerRates } });
+      }
+      setPendingUpdates(pend);
     };
     reader.readAsText(file);
   };
-  // 見積ソフトのマスタ（仕入）を自動追随：画面に戻ったとき＋10分ごとに読み直し、変化があれば知らせる
-  useEffect(() => {
-    if (!loaded) return;
-    const tick = async () => {
-      try {
-        const r = await window.readSekisanMaster();
-        if (!r.ok) return; // スマホ等（直読不可）はスナップショットを保持
-        const prev = latestRef.current.sekisan || {};
-        if (prev.ok && !prev.snap && (prev.ts || 0) === (r.ts || 0) && (prev.master || []).length === r.master.length) return;
-        setSekisan({ ok: true, master: r.master, ts: r.ts, snap: false });
-        if (prev.ok) setUpdateNotice({ msg: "見積ソフトのマスタ（仕入単価）の更新を読み込みました（" + r.master.length.toLocaleString() + " 件）", at: new Date().toLocaleString("ja-JP") });
-      } catch (e) {}
-    };
-    const onVis = () => { if (document.visibilityState === "visible") { tick(); checkZairyoUpdate(false); } };
-    document.addEventListener("visibilitychange", onVis);
-    window.addEventListener("focus", onVis);
-    const id = setInterval(() => { tick(); checkZairyoUpdate(false); }, 10 * 60 * 1000);
-    return () => { document.removeEventListener("visibilitychange", onVis); window.removeEventListener("focus", onVis); clearInterval(id); };
-  }, [loaded, checkZairyoUpdate]);
-  // 起動直後に一度、紐づけた材料マスタ.xlsx の更新を確認
-  useEffect(() => { if (loaded) checkZairyoUpdate(false); }, [loaded, checkZairyoUpdate]);
+  // ※マスタの更新確認は「アプリを開いたとき」だけ（起動処理の中）。
+  //   作業中に勝手に切り替わると作成中の内容がおかしくなるため、画面復帰や定期チェックでは行わない。
   // マスタが変わったら配信ファイルへ自動書き出し（設定済みのときだけ）
   useEffect(() => {
     if (!loaded || !mpack.ready) return;
@@ -1960,15 +2766,15 @@ function App() {
     return Array.from(s).sort();
   }, [zairyo]);
 
-  const TABS = [["search", "🔍 価格検索"], ["bulk", "📦 まとめて検索"], ["case", "📋 案件・集計"], ["list", "🗂 案件一覧"], ["settings", "⚙ 設定"]];
+  const TABS = [["search", "🔍 価格検索"], ["shiire", "🏪 仕入先情報"], ["bulk", "📦 まとめて検索"], ["case", "📋 案件・集計"], ["list", "🗂 案件一覧"], ["settings", "⚙ 設定"]];
   return (
-    <div className="max-w-[1200px] mx-auto p-3">
-      <div className="flex items-center gap-3 mb-3 flex-wrap">
+    <div className="w-full px-3 py-2">
+      <div className="flex items-center gap-3 mb-2 flex-wrap">
         <h1 className="text-xl font-bold text-cyan-900">💴 価格調査ソフト</h1>
         <span className="text-xs text-slate-400 app-sub">仕入価格・市場価格の検索と簡易集計</span>
         <span className="ml-auto text-xs text-slate-400">{saveState}</span>
       </div>
-      <div className="flex gap-1 mb-3 overflow-x-auto">
+      <div className="flex gap-1 mb-2 overflow-x-auto">
         {TABS.map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={"px-3.5 py-1.5 rounded-t text-sm shrink-0 " + (tab === k ? "bg-cyan-700 text-white font-semibold" : "bg-white text-slate-600 hover:bg-slate-50 border border-b-0 border-slate-200")}>
@@ -2005,6 +2811,7 @@ function App() {
 
       {tab === "search" && <SearchTab q={q} setQ={setQ} sekisan={sekisan} zairyo={zairyo} settings={settings} docs={docs} market={market}
         onAddRow={addRowFrom} onShowHist={setHistItem} onShowDocs={setDocsItem} onShowPrice={showPrice} netQ={netQ} setNetQ={setNetQ} netEdited={netEdited} setNetEdited={setNetEdited} />}
+      {tab === "shiire" && <ShiireTab zairyo={zairyo} onShowHist={setHistItem} onAddRow={addRowFrom} />}
       {tab === "bulk" && <BulkTab sekisan={sekisan} zairyo={zairyo} settings={settings} docs={docs} market={market} state={bulkState} setState={setBulkState} onAddRows={addRowsBulk} onShowDocs={setDocsItem} onShowPrice={showPrice} />}
       {tab === "case" && <CaseTab cur={cur} setCur={setCur} settings={settings} setSettings={setSettings} vendorList={vendorList} docs={docs} market={market} onShowDocs={setDocsItem} onShowPrice={showPrice}
         onSaveCase={saveCase} onNewCase={newCase} onPreview={() => setPreview(true)} onExportExcel={exportExcel} onExportMitsumori={exportMitsumori} savedMsg={savedMsg} />}
@@ -2018,6 +2825,7 @@ function App() {
         onRestoreHandle={restoreFromHandle} onRestorePicker={restoreFromPicker} onRecoverGens={recoverFromGens} />}
 
       {histItem && <HistModal item={histItem} history={zairyo.history} onClose={() => setHistItem(null)} />}
+      {pendingUpdates.length > 0 && <MasterUpdateModal items={pendingUpdates} onApply={applyPending} onSkip={skipPending} />}
       {docsItem && <DocsModal item={docsItem} docs={docs} settings={settings} onSaveDocs={saveDocs} onClose={() => setDocsItem(null)} />}
       {priceItem && <PriceModal item={priceItem.item} market={market} settings={settings} onSave={saveMarket} onAdopt={priceItem.onAdopt} onClose={() => setPriceItem(null)} />}
 

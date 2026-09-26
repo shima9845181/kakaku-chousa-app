@@ -21,7 +21,7 @@ echo.
 "%GIT%" add -A
 if errorlevel 1 goto err
 
-"%GIT%" diff --cached --name-only | findstr /I /R "\.json$ _backup \.zip$" >nul
+"%GIT%" diff --cached --name-only | findstr /I /R "\.json _backup \.zip$ \.bak maker_rates" >nul
 if not errorlevel 1 (
   echo *** DATA FILE DETECTED. ABORT. Check .gitignore ***
   pause
